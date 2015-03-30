@@ -123,4 +123,12 @@
         <app-name>app3</app-name>
         <app-name>app4</app-name>
     </server-status>
+
+    <!--badcase model-->
+    <badcasetest>
+        <stringlist>test</stringlist>
+        <stringlist>test</stringlist>
+        <stringlist2>test2</stringlist2>
+        <stringlist2>test2</stringlist2>
+    </badcasetest>
 </model>
