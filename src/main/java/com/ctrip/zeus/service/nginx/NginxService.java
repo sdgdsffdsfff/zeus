@@ -1,6 +1,7 @@
 package com.ctrip.zeus.service.nginx;
 
 import com.ctrip.zeus.model.entity.DyUpstreamOpsData;
+import com.ctrip.zeus.model.entity.Slb;
 import com.ctrip.zeus.nginx.entity.NginxResponse;
 import com.ctrip.zeus.nginx.entity.NginxServerStatus;
 import com.ctrip.zeus.nginx.entity.ReqStatus;
@@ -19,27 +20,27 @@ public interface NginxService {
      * @return the result of "ngnix -t"
      * @throws Exception
      */
-    NginxResponse writeToDisk() throws Exception;
+    NginxResponse writeToDisk(List<Long> vsIds, Long slbId,Integer slbVersion) throws Exception;
 
     /**
      * write all server conf of nginx server conf in the slb
      * @return is all success
      * @throws Exception
      */
-    boolean writeALLToDisk(Long slbId) throws Exception;
+    boolean writeALLToDisk(Long slbId,Integer slbVersion ,  List<Long> vsIds) throws Exception;
     /**
      * write all server conf of nginx server conf in the slb
      * @return list the results
      * @throws Exception
      */
-    List<NginxResponse> writeALLToDiskListResult(Long slbId) throws Exception;
+    List<NginxResponse> writeALLToDiskListResult(Long slbId,Integer slbVersion, List<Long> vsIds) throws Exception;
 
     /**
      * load the colocated nginx server conf from disk
      * @return result of "ngnix -s reload"
      * @throws Exception
      */
-    NginxResponse load() throws Exception;
+    NginxResponse load(Long slbId , Integer version) throws Exception;
 
     /**
      * load all nginx server conf in the slb from disk
@@ -47,14 +48,14 @@ public interface NginxService {
      * @return all response
      * @throws Exception
      */
-    List<NginxResponse> loadAll(Long slbId) throws Exception;
+    List<NginxResponse> loadAll(Long slbId , Integer version) throws Exception;
 
     /**
      *write all and then load all , throw Exception while write failed
      * @param slbId
      * @return List<NginxResponse>
      */
-    List<NginxResponse> writeAllAndLoadAll(Long slbId) throws Exception;
+    List<NginxResponse> writeAllAndLoadAll(Long slbId,Integer slbVersion ,List<Long> vsIds) throws Exception;
 
     /**
      *dy upstream ops api

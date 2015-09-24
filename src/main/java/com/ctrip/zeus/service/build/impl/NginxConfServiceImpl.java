@@ -50,7 +50,7 @@ public class NginxConfServiceImpl implements NginxConfService {
 
     @Override
     public String getNginxConf(Long slbId, int _version) throws Exception {
-        int version = getCurrentVersion(slbId);
+        int version = getCurrentBuildingVersion(slbId);
         if (version <= _version)
         {
             return  nginxConfDao.findBySlbIdAndVersion(slbId,version, NginxConfEntity.READSET_FULL).getContent();
@@ -75,7 +75,7 @@ public class NginxConfServiceImpl implements NginxConfService {
     @Override
     public  List<NginxConfServerData> getNginxConfServer(Long slbId, int _version) throws Exception {
 
-        int version = getCurrentVersion(slbId);
+        int version = getCurrentBuildingVersion(slbId);
 
         List<NginxConfServerData> r = new ArrayList<>();
 
@@ -118,7 +118,7 @@ public class NginxConfServiceImpl implements NginxConfService {
     }
     @Override
     public List<NginxConfUpstreamData> getNginxConfUpstream(Long slbId , int _version) throws Exception {
-        int version = getCurrentVersion(slbId);
+        int version = getCurrentBuildingVersion(slbId);
 
         List<NginxConfUpstreamData> r = new ArrayList<>();
 
@@ -160,36 +160,13 @@ public class NginxConfServiceImpl implements NginxConfService {
     }
 
     @Override
-    public int getCurrentVersion(Long slbId) throws Exception {
-        return buildInfoService.getCurrentTicket(slbId);
+    public int getCurrentBuildingVersion(Long slbId) throws Exception {
+        return buildInfoService.getPaddingTicket(slbId);
     }
 
-
     @Override
-    public List<DyUpstreamOpsData> buildUpstream(Slb slb, Long groupId) throws Exception {
-
-        List<DyUpstreamOpsData> result = new ArrayList<>();
-
-        Set<String> allDownServers = statusService.findAllDownServers();
-        Set<String> allUpGroupServers = statusService.findAllUpGroupServersBySlbId(slb.getId());
-
-        List<String> groupActiveconf =activeConfService.getConfGroupActiveContentByGroupIds(new Long[]{groupId});
-
-        if (groupActiveconf.size()!=1){ throw new NotFoundException("Activate Conf is Null! GroupId "+ groupId);}
-        Group group = DefaultSaxParser.parseEntity(Group.class, groupActiveconf.get(0));
-
-        List<GroupSlb> groupSlbList = group.getGroupSlbs();
-        VirtualServer vs = null;
-        for (GroupSlb groupSlb : groupSlbList )
-        {
-            vs  = groupSlb.getVirtualServer();
-
-            String upstreambody = UpstreamsConf.buildUpstreamConfBody(slb,vs,group,allDownServers,allUpGroupServers);
-            String upstreamName = UpstreamsConf.buildUpstreamName(slb,vs,group);
-            result.add(new DyUpstreamOpsData().setUpstreamCommands(upstreambody).setUpstreamName(upstreamName));
-        }
-
-        return result;
+    public int getCurrentVersion(Long slbId) throws Exception {
+        return buildInfoService.getCurrentTicket(slbId);
     }
 
     @Override

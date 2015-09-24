@@ -1,18 +1,22 @@
 package com.ctrip.zeus.restful.resource;
 
 import com.ctrip.zeus.auth.Authorize;
-import com.ctrip.zeus.exceptions.NotFoundException;
 import com.ctrip.zeus.exceptions.SlbValidatorException;
-import com.ctrip.zeus.lock.DbLockFactory;
-import com.ctrip.zeus.lock.DistLock;
-import com.ctrip.zeus.model.entity.SlbValidateResponse;
-import com.ctrip.zeus.service.activate.ActivateService;
-import com.ctrip.zeus.service.build.BuildInfoService;
-import com.ctrip.zeus.service.build.BuildService;
+import com.ctrip.zeus.executor.TaskManager;
+import com.ctrip.zeus.model.entity.*;
+import com.ctrip.zeus.model.transform.DefaultSaxParser;
+import com.ctrip.zeus.restful.message.ResponseHandler;
+import com.ctrip.zeus.service.activate.ActiveConfService;
+import com.ctrip.zeus.service.activate.GroupActivateConfRewrite;
+import com.ctrip.zeus.service.model.ArchiveService;
 import com.ctrip.zeus.service.model.GroupRepository;
 import com.ctrip.zeus.service.model.SlbRepository;
-import com.ctrip.zeus.service.nginx.NginxService;
+import com.ctrip.zeus.service.task.constant.TaskOpsType;
 import com.ctrip.zeus.service.validate.SlbValidator;
+import com.ctrip.zeus.tag.TagBox;
+import com.ctrip.zeus.task.entity.OpsTask;
+import com.ctrip.zeus.task.entity.TaskResult;
+import com.ctrip.zeus.task.entity.TaskResultList;
 import com.ctrip.zeus.util.AssertUtils;
 import com.netflix.config.DynamicBooleanProperty;
 import com.netflix.config.DynamicIntProperty;
@@ -28,6 +32,7 @@ import javax.ws.rs.core.Context;
 import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.Response;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -40,22 +45,23 @@ import java.util.Set;
 public class ActivateResource {
 
     @Resource
-    private ActivateService activateService;
-    @Resource
-    private NginxService nginxAgentService;
-    @Resource
-    private BuildInfoService buildInfoService;
-    @Resource
-    private BuildService buildService;
-    @Resource
-    private DbLockFactory dbLockFactory;
+    private TagBox tagBox;
     @Resource
     private SlbRepository slbRepository;
     @Resource
     private GroupRepository groupRepository;
-
+    @Resource
+    private ArchiveService archiveService;
     @Resource
     private SlbValidator slbValidator;
+    @Resource
+    private TaskManager taskManager;
+    @Resource
+    private ResponseHandler responseHandler;
+    @Resource
+    private ActiveConfService activeConfService;
+    @Resource
+    private GroupActivateConfRewrite groupActivateConfRewrite;
 
 
     private static DynamicIntProperty lockTimeout = DynamicPropertyFactory.getInstance().getIntProperty("lock.timeout", 5000);
@@ -65,7 +71,6 @@ public class ActivateResource {
     @Path("/slb")
     @Authorize(name="activate")
     public Response activateSlb(@Context HttpServletRequest request,@Context HttpHeaders hh,@QueryParam("slbId") List<Long> slbIds,  @QueryParam("slbName") List<String> slbNames)throws Exception{
-        List<Long> _groupIds = new ArrayList<>();
         List<Long> _slbIds = new ArrayList<>();
         SlbValidateResponse validateResponse = null;
         if ( slbIds!=null && !slbIds.isEmpty() )
@@ -86,7 +91,25 @@ public class ActivateResource {
                 +"\nip:"+validateResponse.getIp());
             }
         }
-        return activateAll(_slbIds,_groupIds,hh);
+        List<OpsTask> tasks = new ArrayList<>();
+        for (Long id : _slbIds) {
+            OpsTask task = new OpsTask();
+            task.setSlbId(id);
+            task.setOpsType(TaskOpsType.ACTIVATE_SLB);
+            task.setTargetSlbId(id);
+            Archive archive = archiveService.getLatestSlbArchive(id);
+            task.setVersion(archive.getVersion());
+            tasks.add(task);
+        }
+        List<Long> taskIds = taskManager.addTask(tasks);
+        List<TaskResult> results = taskManager.getResult(taskIds,30000L);
+
+        TaskResultList resultList = new TaskResultList();
+        for (TaskResult t : results){
+            resultList.addTaskResult(t);
+        }
+        resultList.setTotal(results.size());
+        return responseHandler.handle(resultList,hh.getMediaType());
     }
 
     @GET
@@ -94,7 +117,6 @@ public class ActivateResource {
     @Authorize(name="activate")
     public Response activateGroup(@Context HttpServletRequest request,@Context HttpHeaders hh,@QueryParam("groupId") List<Long> groupIds,  @QueryParam("groupName") List<String> groupNames)throws Exception{
         List<Long> _groupIds = new ArrayList<>();
-        List<Long> _slbIds = new ArrayList<>();
 
         if ( groupIds!=null && !groupIds.isEmpty() )
         {
@@ -107,50 +129,48 @@ public class ActivateResource {
                 _groupIds.add(groupRepository.get(groupName).getId());
             }
         }
-        return activateAll(_slbIds,_groupIds,hh);
-    }
+        List<OpsTask> tasks = new ArrayList<>();
+        for (Long id : _groupIds) {
+            Archive archive = archiveService.getLatestGroupArchive(id);
+            Group group = DefaultSaxParser.parseEntity(Group.class, archive.getContent());
+            AssertUtils.assertNotNull(group,"Archive Group Parser Failed! GroupId:");
+            List<GroupVirtualServer> virtualServers = group.getGroupVirtualServers();
 
-
-    private Response activateAll(List<Long> slbIds,List<Long> groupIds, HttpHeaders hh)throws Exception{
-
-        AssertUtils.assertNotEquals(0, slbIds.size() + groupIds.size(), "slbIds list and groupIds list are empty!");
-
-        //update active action to conf-slb-active and conf-app-active
-        activateService.activate(slbIds,groupIds);
-
-        //find all slbs which need build config
-        Set<Long> slbList = buildInfoService.getAllNeededSlb(slbIds, groupIds);
-
-        if (slbList.size() > 0)
-        {
-            //build all slb config
-            for (Long buildSlbId : slbList) {
-                int ticket = buildInfoService.getTicket(buildSlbId);
-                boolean buildFlag = false;
-                DistLock buildLock = dbLockFactory.newLock( "build_" + buildSlbId);
-                try{
-                    buildLock.lock(lockTimeout.get());
-                    buildFlag =buildService.build(buildSlbId,ticket);
-                }finally {
-                    buildLock.unlock();
-                }
-                if (buildFlag && writable.get()) {
-                    DistLock writeLock = dbLockFactory.newLock( "writeAndReload_" +  buildSlbId);
-                    try {
-                        writeLock.lock(lockTimeout.get());
-                        //Push Service
-                        nginxAgentService.writeAllAndLoadAll(buildSlbId);
-
-                    } finally {
-                        writeLock.unlock();
-                    }
-                }
+            Set<Long> slbIds = new HashSet<>();
+            for (GroupVirtualServer virtualServer : virtualServers){
+                slbIds.add(virtualServer.getVirtualServer().getSlbId());
             }
-            return Response.ok().status(200).type(hh.getMediaType()).entity("Activate success! Activated slbIds:"+
-                    slbList.toString()+" groupIds: " + groupIds.toString()).build();
-        }else
-        {
-              throw new NotFoundException("slb not found!please check your config");
+            slbIds.addAll(activeConfService.getSlbIdsByGroupId(id));
+            for (Long slbId : slbIds){
+                OpsTask task = new OpsTask();
+                task.setGroupId(id);
+                task.setOpsType(TaskOpsType.ACTIVATE_GROUP);
+                task.setTargetSlbId(slbId);
+                task.setVersion(archive.getVersion());
+                tasks.add(task);
+            }
         }
+        List<Long> taskIds = taskManager.addTask(tasks);
+        List<TaskResult> results = taskManager.getResult(taskIds,30000L);
+
+        TaskResultList resultList = new TaskResultList();
+        for (TaskResult t : results){
+            resultList.addTaskResult(t);
+        }
+        resultList.setTotal(results.size());
+        try {
+            tagBox.tagging("active", "group", _groupIds.toArray(new Long[_groupIds.size()]));
+            tagBox.untagging("deactive", "group", _groupIds.toArray(new Long[_groupIds.size()]));
+        } catch (Exception ex) {
+        }
+        return responseHandler.handle(resultList,hh.getMediaType());
+
     }
+    @GET
+    @Path("/group/rewriteConf")
+    public Response rewriteConf(@Context HttpServletRequest request,@Context HttpHeaders hh) throws Exception {
+        groupActivateConfRewrite.rewriteAllGroupActivteConf();
+        return Response.ok().entity("RewriteSuccess").build();
+    }
+
 }

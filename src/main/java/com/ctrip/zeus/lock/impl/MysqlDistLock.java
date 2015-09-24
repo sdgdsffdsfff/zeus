@@ -5,6 +5,7 @@ import com.ctrip.zeus.dal.core.DistLockDo;
 import com.ctrip.zeus.dal.core.DistLockEntity;
 import com.ctrip.zeus.lock.DbLockFactory;
 import com.ctrip.zeus.lock.DistLock;
+import com.ctrip.zeus.util.S;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.unidal.dal.jdbc.DalException;
@@ -32,7 +33,9 @@ public class MysqlDistLock implements DistLock {
 
     @Override
     public boolean tryLock() {
-        DistLockDo d = new DistLockDo().setLockKey(key).setCreatedTime(System.currentTimeMillis());
+        DistLockDo d = new DistLockDo().setLockKey(key)
+                .setOwner(Thread.currentThread().getId()).setServer(S.getIp())
+                .setCreatedTime(System.currentTimeMillis());
         for (int i = 0; i < MAX_RETRIES; i++) {
             try {
                 if (tryAddLock(d))
@@ -49,8 +52,10 @@ public class MysqlDistLock implements DistLock {
     @Override
     public void lock(int timeout) throws Exception {
         long end = System.currentTimeMillis() + timeout;
-        DistLockDo d = new DistLockDo().setLockKey(key).setCreatedTime(System.currentTimeMillis());
-        while(System.currentTimeMillis() < end) {
+        DistLockDo d = new DistLockDo().setLockKey(key)
+                .setOwner(Thread.currentThread().getId()).setServer(S.getIp())
+                .setCreatedTime(System.currentTimeMillis());
+        while (System.currentTimeMillis() < end) {
             try {
                 if (tryAddLock(d))
                     return;
@@ -64,9 +69,11 @@ public class MysqlDistLock implements DistLock {
 
     @Override
     public void lock() {
-        DistLockDo d = new DistLockDo().setLockKey(key).setCreatedTime(System.currentTimeMillis());
+        DistLockDo d = new DistLockDo().setLockKey(key)
+                .setOwner(Thread.currentThread().getId()).setServer(S.getIp())
+                .setCreatedTime(System.currentTimeMillis());
         int count = 1;
-        while (true){
+        while (true) {
             try {
                 if (tryAddLock(d))
                     return;
@@ -79,22 +86,24 @@ public class MysqlDistLock implements DistLock {
 
     @Override
     public void unlock() {
+        DistLockDo d = new DistLockDo().setLockKey(key);
         try {
-            DistLockDo d = new DistLockDo().setLockKey(key);
             if (unlock(d))
                 return;
-            for (int i = 1; i < MAX_RETRIES; i++) {
-                try {
-                    if (unlock(d))
-                        return;
-                    retryDelay(key, i);
-                } catch (DalException e) {
-                    retryDelay(key, i);
-                }
-            }
         } catch (DalException e) {
-            logger.warn("Fail to unlock the lock " + key);
+            logger.warn("Fail to unlock the lock " + key + ", throwing ex: " + (e == null ? " Unknown" : e.getMessage()));
         }
+        for (int i = 1; i < MAX_RETRIES; i++) {
+            try {
+                if (unlock(d))
+                    return;
+                retryDelay(key, i);
+            } catch (DalException e) {
+                retryDelay(key, i);
+                logger.warn("Fail to unlock the lock " + key + ", throwing ex: " + (e == null ? " Unknown" : e.getMessage()));
+            }
+        }
+        logger.warn("Abnormal unlock tries. Fail to unlock the lock " + key + ".");
     }
 
     private boolean tryAddLock(DistLockDo d) throws DalException {

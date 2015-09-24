@@ -3,7 +3,7 @@
     <entity name="conf-group-active" table="conf_group_active" alias="cga">
         <var name="ids" value-type="Long[]"/>
         <query-defs>
-            <query name="insert" type="INSERT">
+            <query name="insert" type="INSERT" batch="true">
                 <statement>
                     <![CDATA[
                     INSERT INTO <TABLE/>(<FIELDS/>)
@@ -25,12 +25,43 @@
                     ]]>
                 </statement>
             </query>
+            <query name="find-all" type="SELECT" multiple="true">
+                <statement>
+                    <![CDATA[
+                    SELECT <FIELDS/>
+                    FROM <TABLE/>
+                    ]]>
+                </statement>
+            </query>
+            <query name="find-all-by-group-ids-and-slb-id" type="SELECT" multiple="true">
+                <param name="ids"/>
+                <param name="slb-id"/>
+                <statement>
+                    <![CDATA[
+                    SELECT <FIELDS/>
+                    FROM <TABLE/>
+                        WHERE <FIELD name='group-id'/> in <IN>${ids}</IN>
+                        AND <FIELD name='slb-id'/> = ${slb-id}
+                    ]]>
+                </statement>
+            </query>
             <query name="delete-by-group-id" type="DELETE">
                 <param name="group-id"/>
                 <statement>
                     <![CDATA[
                     DELETE FROM <TABLE/>
                     WHERE <FIELD name='group-id'/> = ${group-id}
+                    ]]>
+                </statement>
+            </query>
+            <query name="delete-by-group-id-and-slb-id" type="DELETE">
+                <param name="group-id"/>
+                <param name="slb-id"/>
+                <statement>
+                    <![CDATA[
+                    DELETE FROM <TABLE/>
+                    WHERE <FIELD name='group-id'/> = ${group-id}
+                    AND <FIELD name="slb-id"/> = ${slb-id}
                     ]]>
                 </statement>
             </query>
@@ -99,12 +130,33 @@
                     ]]>
                 </statement>
             </query>
+            <query name="find-by-group-id" type="SELECT" multiple="true">
+                <param name="group-id"/>
+                <statement>
+                    <![CDATA[
+                    SELECT <FIELDS/>
+                    FROM <TABLE/>
+                        WHERE <FIELD name='group-id'/> = ${group-id}
+                    ]]>
+                </statement>
+            </query>
             <query name="delete-by-group-id" type="DELETE">
                 <param name="group-id"/>
                 <statement>
                     <![CDATA[
                     DELETE FROM <TABLE/>
                     WHERE <FIELD name='group-id'/> = ${group-id}
+                    ]]>
+                </statement>
+            </query>
+            <query name="delete-by-group-id-slb-id" type="DELETE">
+                <param name="group-id"/>
+                <param name="slb-id"/>
+                <statement>
+                    <![CDATA[
+                    DELETE FROM <TABLE/>
+                    WHERE <FIELD name='group-id'/> = ${group-id}
+                    AND <FIELD name='slb-id'/> = ${slb-id}
                     ]]>
                 </statement>
             </query>

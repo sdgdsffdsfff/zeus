@@ -172,6 +172,15 @@
 		</component>
 		<component>
 			<role>org.unidal.dal.jdbc.mapping.TableProvider</role>
+			<role-hint>m-vs-content</role-hint>
+			<implementation>org.unidal.dal.jdbc.mapping.SimpleTableProvider</implementation>
+			<configuration>
+				<physical-table-name>m_vs_content</physical-table-name>
+				<data-source-name>zeus</data-source-name>
+			</configuration>
+		</component>
+		<component>
+			<role>org.unidal.dal.jdbc.mapping.TableProvider</role>
 			<role-hint>nginx-conf</role-hint>
 			<implementation>org.unidal.dal.jdbc.mapping.SimpleTableProvider</implementation>
 			<configuration>
@@ -244,6 +253,24 @@
 		</component>
 		<component>
 			<role>org.unidal.dal.jdbc.mapping.TableProvider</role>
+			<role-hint>r-vs-domain</role-hint>
+			<implementation>org.unidal.dal.jdbc.mapping.SimpleTableProvider</implementation>
+			<configuration>
+				<physical-table-name>r_vs_domain</physical-table-name>
+				<data-source-name>zeus</data-source-name>
+			</configuration>
+		</component>
+		<component>
+			<role>org.unidal.dal.jdbc.mapping.TableProvider</role>
+			<role-hint>r-vs-slb</role-hint>
+			<implementation>org.unidal.dal.jdbc.mapping.SimpleTableProvider</implementation>
+			<configuration>
+				<physical-table-name>r_vs_slb</physical-table-name>
+				<data-source-name>zeus</data-source-name>
+			</configuration>
+		</component>
+		<component>
+			<role>org.unidal.dal.jdbc.mapping.TableProvider</role>
 			<role-hint>report</role-hint>
 			<implementation>org.unidal.dal.jdbc.mapping.SimpleTableProvider</implementation>
 			<configuration>
@@ -307,6 +334,15 @@
 		</component>
 		<component>
 			<role>org.unidal.dal.jdbc.mapping.TableProvider</role>
+			<role-hint>snap-server-group</role-hint>
+			<implementation>org.unidal.dal.jdbc.mapping.SimpleTableProvider</implementation>
+			<configuration>
+				<physical-table-name>snap_server_group</physical-table-name>
+				<data-source-name>zeus</data-source-name>
+			</configuration>
+		</component>
+		<component>
+			<role>org.unidal.dal.jdbc.mapping.TableProvider</role>
 			<role-hint>status-group-server</role-hint>
 			<implementation>org.unidal.dal.jdbc.mapping.SimpleTableProvider</implementation>
 			<configuration>
@@ -338,6 +374,15 @@
 			<implementation>org.unidal.dal.jdbc.mapping.SimpleTableProvider</implementation>
 			<configuration>
 				<physical-table-name>tag_item</physical-table-name>
+				<data-source-name>zeus</data-source-name>
+			</configuration>
+		</component>
+		<component>
+			<role>org.unidal.dal.jdbc.mapping.TableProvider</role>
+			<role-hint>task</role-hint>
+			<implementation>org.unidal.dal.jdbc.mapping.SimpleTableProvider</implementation>
+			<configuration>
+				<physical-table-name>task</physical-table-name>
 				<data-source-name>zeus</data-source-name>
 			</configuration>
 		</component>
@@ -504,6 +549,15 @@
 			</requirements>
 		</component>
 		<component>
+			<role>com.ctrip.zeus.dal.core.MVsContentDao</role>
+			<implementation>com.ctrip.zeus.dal.core.MVsContentDao</implementation>
+			<requirements>
+				<requirement>
+					<role>org.unidal.dal.jdbc.QueryEngine</role>
+				</requirement>
+			</requirements>
+		</component>
+		<component>
 			<role>com.ctrip.zeus.dal.core.NginxConfDao</role>
 			<implementation>com.ctrip.zeus.dal.core.NginxConfDao</implementation>
 			<requirements>
@@ -576,6 +630,24 @@
 			</requirements>
 		</component>
 		<component>
+			<role>com.ctrip.zeus.dal.core.RVsDomainDao</role>
+			<implementation>com.ctrip.zeus.dal.core.RVsDomainDao</implementation>
+			<requirements>
+				<requirement>
+					<role>org.unidal.dal.jdbc.QueryEngine</role>
+				</requirement>
+			</requirements>
+		</component>
+		<component>
+			<role>com.ctrip.zeus.dal.core.RVsSlbDao</role>
+			<implementation>com.ctrip.zeus.dal.core.RVsSlbDao</implementation>
+			<requirements>
+				<requirement>
+					<role>org.unidal.dal.jdbc.QueryEngine</role>
+				</requirement>
+			</requirements>
+		</component>
+		<component>
 			<role>com.ctrip.zeus.dal.core.ReportDao</role>
 			<implementation>com.ctrip.zeus.dal.core.ReportDao</implementation>
 			<requirements>
@@ -639,6 +711,15 @@
 			</requirements>
 		</component>
 		<component>
+			<role>com.ctrip.zeus.dal.core.SnapServerGroupDao</role>
+			<implementation>com.ctrip.zeus.dal.core.SnapServerGroupDao</implementation>
+			<requirements>
+				<requirement>
+					<role>org.unidal.dal.jdbc.QueryEngine</role>
+				</requirement>
+			</requirements>
+		</component>
+		<component>
 			<role>com.ctrip.zeus.dal.core.StatusGroupServerDao</role>
 			<implementation>com.ctrip.zeus.dal.core.StatusGroupServerDao</implementation>
 			<requirements>
@@ -668,6 +749,15 @@
 		<component>
 			<role>com.ctrip.zeus.dal.core.TagItemDao</role>
 			<implementation>com.ctrip.zeus.dal.core.TagItemDao</implementation>
+			<requirements>
+				<requirement>
+					<role>org.unidal.dal.jdbc.QueryEngine</role>
+				</requirement>
+			</requirements>
+		</component>
+		<component>
+			<role>com.ctrip.zeus.dal.core.TaskDao</role>
+			<implementation>com.ctrip.zeus.dal.core.TaskDao</implementation>
 			<requirements>
 				<requirement>
 					<role>org.unidal.dal.jdbc.QueryEngine</role>

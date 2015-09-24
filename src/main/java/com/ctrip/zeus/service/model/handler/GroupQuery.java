@@ -1,8 +1,6 @@
 package com.ctrip.zeus.service.model.handler;
 
 import com.ctrip.zeus.model.entity.Group;
-import com.ctrip.zeus.model.entity.GroupServer;
-import org.unidal.dal.jdbc.DalException;
 
 import java.util.List;
 
@@ -12,23 +10,5 @@ import java.util.List;
  */
 public interface GroupQuery {
 
-    Group get(String name) throws DalException;
-
-    Group getById(Long id) throws DalException;
-
-    Group getByAppId(String appId) throws DalException;
-
-    List<Group> batchGetByIds(Long[] ids) throws DalException;
-
-    List<Group> getAll() throws DalException;
-
-    List<Group> getLimit(Long fromId, int maxCount) throws DalException;
-
-    List<Group> getByVirtualServer(Long virtualServerId) throws DalException;
-
-    List<String> getByGroupServer(String groupServerIp) throws DalException;
-
-    List<String> getGroupServerIpsByGroup(Long groupId) throws DalException;
-
-    List<GroupServer> getGroupServersByGroup(Long groupId) throws DalException;
+    Group getById(Long id) throws Exception;
 }

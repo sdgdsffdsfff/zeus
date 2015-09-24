@@ -1,7 +1,6 @@
 package com.ctrip.zeus.service.build.impl;
 
 import com.ctrip.zeus.dal.core.*;
-import com.ctrip.zeus.model.entity.GroupSlb;
 import com.ctrip.zeus.service.activate.ActiveConfService;
 import com.ctrip.zeus.service.build.BuildInfoService;
 import com.ctrip.zeus.service.model.SlbRepository;
@@ -48,8 +47,8 @@ public class BuildInfoServiceImpl implements BuildInfoService {
             return 1;
         }
 
-        int pending = d.getPendingTicket();
-        d.setPendingTicket(pending + 1).setDataChangeLastTime(new Date());
+        int current = d.getCurrentTicket();
+        d.setPendingTicket(current + 1).setDataChangeLastTime(new Date());
         buildInfoDao.updateBySlbId(d, BuildInfoEntity.UPDATESET_FULL);
 
         logger.debug("Get Ticket success. Ticket Num: " + d.getPendingTicket() + "Slb Id: " + slbId);
@@ -58,16 +57,16 @@ public class BuildInfoServiceImpl implements BuildInfoService {
     }
 
     @Override
-    public boolean updateTicket(Long slbId, int ticket) throws Exception
+    public boolean updateTicket(Long slbId, int version) throws Exception
     {
         BuildInfoDo d = buildInfoDao.findBySlbId(slbId, BuildInfoEntity.READSET_FULL);
 
-        if (ticket>d.getCurrentTicket())
+        if (version>d.getCurrentTicket())
         {
-            d.setCurrentTicket(ticket);
+            d.setCurrentTicket(version);
             buildInfoDao.updateByPK(d, BuildInfoEntity.UPDATESET_FULL);
 
-            logger.debug("Update ticket success. Ticket Num: "+ticket+"Slb ID: "+ slbId);
+            logger.debug("Update ticket success. Ticket Num: "+version+"Slb ID: "+ slbId);
 
             return true;
         }else
@@ -77,36 +76,6 @@ public class BuildInfoServiceImpl implements BuildInfoService {
 
     }
 
-    @Override
-    public Set<Long> getAllNeededSlb(List<Long> slbIds,List<Long> groupIds) throws Exception {
-        Set<Long> buildSlbIds = new HashSet<>();
-        for (Long s : slbIds)
-        {
-            if (slbRepository.getById(s)==null)
-            {
-                logger.warn("slb ["+s+"] is not exist！remove it from activate slb  list!");
-            }else {
-                buildSlbIds.add(s);
-            }
-        }
-
-
-        List<GroupSlb> list = slbRepository.listGroupSlbsByGroups(groupIds.toArray(new Long[]{}));
-
-
-        if (groupIds.size()>0)
-        {
-            AssertUtils.assertNotNull(list, "[BuildInfoService getAllNeededSlb]Not found GroupSlbs by groupIds! Please check the configuration of groupIds: " + groupIds.toString());
-        }
-
-        if (list!=null&&list.size()>0)
-        {
-            for (GroupSlb groupSlb : list) {
-                buildSlbIds.add(groupSlb.getSlbId());
-            }
-        }
-        return buildSlbIds;
-    }
 
     @Override
     public int getCurrentTicket(Long slbId) throws Exception {
@@ -118,5 +87,16 @@ public class BuildInfoServiceImpl implements BuildInfoService {
     public int getPaddingTicket(Long slbId)throws Exception{
         BuildInfoDo d = buildInfoDao.findBySlbId(slbId, BuildInfoEntity.READSET_FULL);
         return d.getPendingTicket();
+    }
+
+    @Override
+    public int resetPaddingTicket(Long slbId) throws Exception {
+        BuildInfoDo d = buildInfoDao.findBySlbId(slbId, BuildInfoEntity.READSET_FULL);
+        if (d!=null){
+            buildInfoDao.updateByPK(d.setPendingTicket(d.getCurrentTicket()), BuildInfoEntity.UPDATESET_FULL);
+            return d.getPendingTicket();
+        }else {
+            return 0;
+        }
     }
 }

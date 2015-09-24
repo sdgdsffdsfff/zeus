@@ -14,14 +14,6 @@ import java.util.List;
  */
 public interface NginxConfService extends Repository {
     /**
-     * build upstream config by app name
-     * @param slb the slb
-     * @param groupId the group id
-     * @return upstream data
-     */
-    public List<DyUpstreamOpsData> buildUpstream(Slb slb , Long groupId)throws Exception;
-
-    /**
      * build config by slb name and version number
      * @param slbId the slb id
      * @param version the ticket number , the version
@@ -58,10 +50,19 @@ public interface NginxConfService extends Repository {
     public List<NginxConfUpstreamData> getNginxConfUpstream(Long slbId, int version) throws Exception;
 
     /**
-     * get current version by slb name
+     * get current building version by slb name
+     * @param slbId the slb slbId
+     * @return current version
+     * @throws Exception
+     */
+    public int getCurrentBuildingVersion(Long slbId) throws Exception;
+
+    /**
+     * get current building version by slb name
      * @param slbId the slb slbId
      * @return current version
      * @throws Exception
      */
     public int getCurrentVersion(Long slbId) throws Exception;
+
 }
