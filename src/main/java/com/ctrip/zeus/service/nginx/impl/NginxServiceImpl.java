@@ -1,24 +1,13 @@
 package com.ctrip.zeus.service.nginx.impl;
 
 import com.ctrip.zeus.client.NginxClient;
-import com.ctrip.zeus.dal.core.NginxServerDao;
-import com.ctrip.zeus.dal.core.NginxServerDo;
-import com.ctrip.zeus.dal.core.NginxServerEntity;
-import com.ctrip.zeus.model.entity.*;
-import com.ctrip.zeus.nginx.NginxOperator;
-import com.ctrip.zeus.nginx.TrafficStatusHelper;
-import com.ctrip.zeus.nginx.entity.NginxResponse;
-import com.ctrip.zeus.nginx.entity.NginxServerStatus;
-import com.ctrip.zeus.nginx.entity.ReqStatus;
-import com.ctrip.zeus.nginx.entity.TrafficStatus;
-import com.ctrip.zeus.service.activate.ActivateService;
-import com.ctrip.zeus.service.build.NginxConfService;
-import com.ctrip.zeus.service.model.GroupRepository;
-import com.ctrip.zeus.service.model.SlbRepository;
+import com.ctrip.zeus.model.entity.DyUpstreamOpsData;
+import com.ctrip.zeus.model.entity.SlbServer;
+import com.ctrip.zeus.nginx.entity.*;
 import com.ctrip.zeus.service.nginx.NginxService;
-import com.ctrip.zeus.nginx.RollingTrafficStatus;
-import com.ctrip.zeus.util.AssertUtils;
-import com.ctrip.zeus.util.S;
+import com.ctrip.zeus.service.nginx.handler.NginxConfOpsService;
+import com.ctrip.zeus.service.nginx.handler.NginxOpsService;
+import com.ctrip.zeus.util.TimerUtils;
 import com.netflix.config.DynamicIntProperty;
 import com.netflix.config.DynamicPropertyFactory;
 import org.slf4j.Logger;
@@ -29,7 +18,7 @@ import javax.annotation.Resource;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.*;
 
 /**
  * @author:xingchaowang
@@ -39,399 +28,237 @@ import java.util.concurrent.ConcurrentHashMap;
 public class NginxServiceImpl implements NginxService {
     private static final Logger LOGGER = LoggerFactory.getLogger(NginxServiceImpl.class);
     private static DynamicIntProperty adminServerPort = DynamicPropertyFactory.getInstance().getIntProperty("server.port", 8099);
-    private static DynamicIntProperty dyupsPort = DynamicPropertyFactory.getInstance().getIntProperty("dyups.port", 8081);
+    private static DynamicIntProperty nginxFutureTimeout = DynamicPropertyFactory.getInstance().getIntProperty("nginx.client.future.timeout", 3000);
+    private static DynamicIntProperty nginxFutureCheckTimes = DynamicPropertyFactory.getInstance().getIntProperty("nginx.client.future.check.times", 10);
 
     private final DateFormat formatter = new SimpleDateFormat("yyyyMMddHHmm");
     @Resource
-    private SlbRepository slbRepository;
+    private NginxOpsService nginxOpsService;
     @Resource
-    private GroupRepository groupRepository;
-    @Resource
-    private NginxConfService nginxConfService;
-    @Resource
-    private NginxServerDao nginxServerDao;
-    @Resource
-    private RollingTrafficStatus rollingTrafficStatus;
-    @Resource
-    private ActivateService activateService;
+    private NginxConfOpsService nginxConfOpsService;
 
+    private ThreadPoolExecutor threadPoolExecutor;
 
-    private Logger logger = LoggerFactory.getLogger(NginxServiceImpl.class);
+    NginxServiceImpl() {
+        threadPoolExecutor = new ThreadPoolExecutor(10, 20, 300, TimeUnit.SECONDS, new LinkedBlockingQueue<Runnable>());
+    }
+
+    private final Logger logger = LoggerFactory.getLogger(NginxServiceImpl.class);
 
     @Override
-    public NginxResponse writeToDisk(List<Long> vsIds , Long slbId ,Integer slbVersion) throws Exception {
-        String ip = S.getIp();
-        Slb slb ;
-        if (slbVersion!=null&&slbVersion!=0){
-            slb = activateService.getActivatingSlb(slbId,slbVersion);
-        }else {
-            slb = activateService.getActivatedSlb(slbId);
+    public List<NginxResponse> update(String nginxConf, NginxConfEntry entry, Set<Long> updateVsIds, Set<Long> cleanVsIds, DyUpstreamOpsData[] dyups, boolean needReload, boolean needTest, boolean needDyups) throws Exception {
+        List<NginxResponse> response = new ArrayList<>();
+        try {
+            logger.info("[NginxServiceImpl]Start update nginx config files.");
+            //1. update config
+            nginxConfOpsService.updateNginxConf(nginxConf);
+            FileOpRecord fileOpRecord = nginxConfOpsService.cleanAndUpdateConf(cleanVsIds, updateVsIds, entry);
+            //2. test reload or dyups, if needed. undo config if failed.
+            if (needTest) {
+                NginxResponse res = nginxOpsService.test();
+                response.add(res);
+                if (!res.getSucceed()) {
+                    logger.error("[NginxService]update failed.Test conf failed.");
+                    nginxConfOpsService.undoUpdateNginxConf();
+                    nginxConfOpsService.undoCleanAndUpdateConf(cleanVsIds, entry, fileOpRecord);
+                }
+            }
+            if (needReload) {
+                NginxResponse res = nginxOpsService.reload();
+                response.add(res);
+                if (!res.getSucceed()) {
+                    logger.error("[NginxService]update failed.Reload conf failed.");
+                    nginxConfOpsService.undoUpdateNginxConf();
+                    nginxConfOpsService.undoCleanAndUpdateConf(cleanVsIds, entry, fileOpRecord);
+                }
+            }
+            if (needDyups) {
+                List<NginxResponse> dyupsRes = nginxOpsService.dyups(dyups);
+                response.addAll(dyupsRes);
+                for (NginxResponse res : dyupsRes) {
+                    if (!res.getSucceed()) {
+                        logger.error("[NginxService]update failed.Dyups conf failed.");
+                        nginxConfOpsService.undoUpdateNginxConf();
+                        nginxConfOpsService.undoCleanAndUpdateConf(cleanVsIds, entry, fileOpRecord);
+                        break;
+                    }
+                }
+            }
+            logger.info("[NginxServiceImpl]Finish update nginx config files.");
+        } finally {
+            logger.info("Nginx update response. Responses:" + response.toString());
         }
-        AssertUtils.assertNotNull(slb,"Can't found slbId when writing config to disk!");
-        int version = nginxConfService.getCurrentBuildingVersion(slbId);
+        return response;
+    }
 
-        NginxServerDo nginxServerDo = nginxServerDao.findByIp(ip, NginxServerEntity.READSET_FULL);
-        if (nginxServerDo != null && nginxServerDo.getVersion() == version) {
-            NginxResponse res = new NginxResponse();
-            res.setServerIp(ip).setSucceed(true).setOutMsg("current version is lower then or equal the version used!current version ["
-                    + version + "],used version [" + nginxServerDo.getVersion() + "]");
+    @Override
+    public NginxResponse refresh(String nginxConf, NginxConfEntry entry, boolean reload) throws Exception {
+        logger.info("Start refresh nginx config files.");
+        nginxConfOpsService.updateNginxConf(nginxConf);
+        Long updateAllFlag = nginxConfOpsService.updateAll(entry);
+        if (reload) {
+            NginxResponse res = nginxOpsService.reload();
+            if (!res.getSucceed()) {
+                logger.error("[NginxService]update failed.Reload conf failed.");
+                nginxConfOpsService.undoUpdateNginxConf();
+                nginxConfOpsService.undoUpdateAll(updateAllFlag);
+            }
             return res;
         }
-
-        NginxOperator nginxOperator = new NginxOperator(slb.getNginxConf(), slb.getNginxBin());
-
-        cleanConfOnDisk(slbId, version, nginxOperator);
-        writeConfToDisk(slbId, version, vsIds, nginxOperator);
-
-        NginxResponse response = nginxOperator.reloadConfTest();
-        response.setServerIp(ip);
-        if(response.getSucceed()){
-            NginxServerDo nginxServer = nginxServerDao.findByIp(ip, NginxServerEntity.READSET_FULL);
-            if (nginxServer == null)
-            {
-                nginxServer = new NginxServerDo().setIp(ip).setVersion(version);
-            }
-            nginxServerDao.updateByPK(nginxServer.setVersion(version), NginxServerEntity.UPDATESET_FULL);
-        }
-        return response;
+        return new NginxResponse().setSucceed(true);
     }
 
+
     @Override
-    public boolean writeALLToDisk(Long slbId, Integer slbVersion ,List<Long> vsIds) throws Exception {
-        List<NginxResponse> responses = new ArrayList<>();
-        if (!writeALLToDisk(slbId,slbVersion,vsIds, responses)){
-            for (NginxResponse response : responses){
-                if (!response.getSucceed()){
-                    throw new Exception("Write To Disk Failed! Detail: "+String.format(NginxResponse.JSON,response));
+    public NginxResponse updateConf(List<SlbServer> slbServers) throws Exception {
+        Map<String, FutureTask<NginxResponse>> futureTasks = new HashMap<>();
+
+        logger.info("[Push Conf] Assign updating conf job to slb servers.");
+        for (SlbServer slbServer : slbServers) {
+            final String ip = slbServer.getIp();
+            final NginxClient nginxClient = NginxClient.getClient(buildRemoteUrl(slbServer.getIp()));
+            FutureTask<NginxResponse> futureTask = new FutureTask<>(new Callable<NginxResponse>() {
+                @Override
+                public NginxResponse call() throws Exception {
+                    logger.info("[Push Conf] Start updating conf on server " + ip + ".");
+                    NginxResponse response = nginxClient.update(false);
+                    if (!response.getSucceed()) {
+                        logger.error("[Push Conf] Failed to update conf on server " + ip + ". Cause:" + response.toString());
+                    } else {
+                        logger.info("[Push Conf] Finish updating conf on server " + ip + ". Success:" + response.getSucceed() + ".");
+                    }
+                    return response;
+                }
+            });
+            threadPoolExecutor.execute(futureTask);
+            futureTasks.put(ip, futureTask);
+        }
+
+        logger.info("[Push Conf] Reading result from updating conf.");
+        long start = System.nanoTime();
+
+        int sleepInterval = nginxFutureTimeout.get() / nginxFutureCheckTimes.get();
+        Set<String> finishedServer = new HashSet<>();
+        List<NginxResponse> result = new ArrayList<>();
+        for (int i = 0; i <= nginxFutureCheckTimes.get(); i++) {
+            for (String sip : futureTasks.keySet()) {
+                FutureTask<NginxResponse> futureTask = futureTasks.get(sip);
+                if (futureTask.isDone() && !finishedServer.contains(sip)) {
+                    finishedServer.add(sip);
+                    NginxResponse response = futureTask.get();
+                    result.add(response);
+                    if (response.getSucceed()) {
+                        logger.info("[Push Conf] Use success result from server " + sip + ". Cost:" + TimerUtils.nanoToMilli(System.nanoTime() - start) + "ms. Result:\n" + response.toString());
+                        return response;
+                    }
                 }
             }
-            throw new Exception("Write To Disk Failed! Detail: None.");
-        }else{
-            return true;
-        }
-    }
 
-    @Override
-    public List<NginxResponse> writeALLToDiskListResult(Long slbId,Integer slbVersion ,List<Long> vsIds ) throws Exception {
-        List<NginxResponse> result = new ArrayList<>();
-        writeALLToDisk(slbId, slbVersion ,vsIds, result);
-        return result;
-    }
-
-    public boolean writeALLToDisk(Long slbId,Integer slbVersion , List<Long> vsIds , List<NginxResponse> responses) throws Exception {
-        List<NginxResponse> result = null;
-        boolean sucess = true;
-        if (responses != null) {
-            result = responses;
-        } else {
-            result = new ArrayList<>();
-        }
-
-        Slb slb ;
-        if (slbVersion!=null&&slbVersion!=0){
-            slb = activateService.getActivatingSlb(slbId,slbVersion);
-        }else {
-            slb =activateService.getActivatedSlb(slbId);
-        }
-        AssertUtils.assertNotNull(slb,"Can't found slbId when writing config to disk!");
-        List<SlbServer> slbServers = slb.getSlbServers();
-        for (SlbServer slbServer : slbServers) {
-            logger.info("[ writeAllToDisk ]: start write to server : " + slbServer.getIp());
-            NginxClient nginxClient = NginxClient.getClient(buildRemoteUrl(slbServer.getIp()));
-            NginxResponse response = nginxClient.write(vsIds,slbId,slbVersion);
-            result.add(response);
-
-            logger.info("[ writeAllToDisk ]: write to server finished : " + slbServer.getIp());
-        }
-
-        if (result.size() == 0) {
-            sucess = false;
-        }
-
-        for (NginxResponse res : result) {
-            sucess = sucess && res.getSucceed();
-        }
-
-        return sucess;
-    }
-
-    @Override
-    public NginxResponse load(Long slbId , Integer version) throws Exception {
-        String ip = S.getIp();
-        Slb slb ;
-        if (version!=null&&version!=0){
-            slb = activateService.getActivatingSlb(slbId,version);
-        }else {
-            slb = activateService.getActivatedSlb(slbId);
-        }
-
-        NginxOperator nginxOperator = new NginxOperator(slb.getNginxConf(), slb.getNginxBin());
-
-        // reload configuration
-        NginxResponse response = nginxOperator.reloadConf();
-        response.setServerIp(ip);
-        return response;
-    }
-
-
-    @Override
-    public List<NginxResponse> loadAll(Long slbId , Integer version) throws Exception {
-        List<NginxResponse> result = new ArrayList<>();
-        Slb slb;
-        if (version!=null&&version!=0){
-            slb = activateService.getActivatingSlb(slbId,version);
-        }else {
-            slb = activateService.getActivatedSlb(slbId);
-        }
-
-        List<SlbServer> slbServers = slb.getSlbServers();
-        for (SlbServer slbServer : slbServers) {
-            NginxClient nginxClient = NginxClient.getClient(buildRemoteUrl(slbServer.getIp()));
-            NginxResponse response = nginxClient.load(slbId,version);
-            result.add(response);
-        }
-        return result;
-
-    }
-
-    @Override
-    public List<NginxResponse> writeAllAndLoadAll(Long slbId,Integer slbVersion,List<Long> vsIds) throws Exception {
-        List<NginxResponse> result = new ArrayList<>();
-        if (!writeALLToDisk(slbId,slbVersion,vsIds, result)) {
-            LOGGER.error("Write All To Disk Failed!");
-            StringBuilder sb = new StringBuilder(128);
-            sb.append("[");
-            for (NginxResponse res : result) {
-                sb.append(String.format(NginxResponse.JSON, res)).append(",\n");
-            }
-            sb.append("]");
-            throw new Exception("Write All To Disk Failed!\nDetail:\n" + sb.toString());
-        }
-        result = loadAll(slbId , slbVersion);
-        return result;
-    }
-
-    @Override
-    public NginxResponse dyopsLocal(String upsName, String upsCommands) throws Exception {
-        return new NginxOperator().dyupsLocal(upsName, upsCommands);
-    }
-
-    @Override
-    public List<NginxResponse> dyops(Long slbId, List<DyUpstreamOpsData> dyups) throws Exception {
-        List<NginxResponse> result = new ArrayList<>();
-        Slb slb = activateService.getActivatedSlb(slbId);
-        boolean flag = false;
-
-        List<SlbServer> slbServers = slb.getSlbServers();
-        for (SlbServer slbServer : slbServers) {
-            flag = true;
-            NginxClient nginxClient = NginxClient.getClient("http://" + slbServer.getIp() + ":" + adminServerPort.get());
-            for (DyUpstreamOpsData dyup : dyups) {
-                NginxResponse response = nginxClient.dyups(dyup.getUpstreamName(), dyup.getUpstreamCommands());
-                response.setServerIp(slbServer.getIp());
-                result.add(response);
-                flag = flag && response.getSucceed();
-            }
-        }
-        return result;
-    }
-
-
-    @Override
-    public NginxServerStatus getStatus() throws Exception {
-        String ip = S.getIp();
-        Slb slb = slbRepository.getBySlbServer(ip);
-        NginxOperator nginxOperator = new NginxOperator(slb.getNginxConf(), slb.getNginxBin());
-        return nginxOperator.getRuntimeStatus();
-    }
-
-    @Override
-    public List<NginxServerStatus> getStatusAll(Long slbId) throws Exception {
-        List<NginxServerStatus> result = new ArrayList<>();
-        String ip = S.getIp();
-
-        Slb slb = slbRepository.getById(slbId);
-        for (SlbServer slbServer : slb.getSlbServers()) {
-            if (ip.equals(slbServer.getIp())) {
-                result.add(getStatus());
-                continue;
-            }
-            NginxClient nginxClient = NginxClient.getClient(buildRemoteUrl(slbServer.getIp()));
-            NginxServerStatus response = nginxClient.getNginxServerStatus();
-            result.add(response);
-        }
-        return result;
-    }
-
-    @Override
-    public List<ReqStatus> getTrafficStatusBySlb(Long slbId, int count, boolean aggregatedByGroup, boolean aggregatedBySlbServer) throws Exception {
-        List<ReqStatus> result = getTrafficStatusBySlb(slbId, count);
-        if (!(aggregatedByGroup && aggregatedBySlbServer)) {
-            result = aggregateByKey(result, aggregatedByGroup, aggregatedBySlbServer, slbId);
-        }
-        if (aggregatedByGroup) {
-            for (ReqStatus reqStatus : result) {
-                if (reqStatus.getGroupId()!= null && reqStatus.getGroupId() == -1L) {
-                    reqStatus.setSlbId(slbId);
-                    reqStatus.setGroupName("Not exist");
-                    continue;
+            if (finishedServer.size() == futureTasks.size()) {
+                StringBuilder sb = new StringBuilder();
+                for (NginxResponse nr : result) {
+                    sb.append(nr.toString()).append('\n');
                 }
-                Group g = groupRepository.getById(reqStatus.getGroupId());
-                if (g == null)
-                    reqStatus.setGroupName("Not Found");
-                else
-                    reqStatus.setGroupName(g.getName());
-                reqStatus.setSlbId(slbId);
+                logger.error("[Push Conf] Update conf requests all failed. Check the correctness of the generating conf. Costs:" + TimerUtils.nanoToMilli(System.nanoTime() - start) + "ms. Results:\n" + sb.toString());
+                throw new Exception("Update conf all failed. Cause: " + sb.toString());
             }
-        } else {
-            for (ReqStatus reqStatus : result) {
-                reqStatus.setSlbId(slbId);
-            }
-        }
-        return result;
-    }
 
-    private List<ReqStatus> getTrafficStatusBySlb(Long slbId, int count) throws Exception {
-        Slb slb = slbRepository.getById(slbId);
-        List<ReqStatus> list = new ArrayList<>();
-        for (SlbServer slbServer : slb.getSlbServers()) {
-            NginxClient nginxClient = NginxClient.getClient(buildRemoteUrl(slbServer.getIp()));
             try {
-                list.addAll(nginxClient.getTrafficStatus(System.currentTimeMillis() - 60 * 1000L, count).getStatuses());
+                Thread.sleep(sleepInterval);
             } catch (Exception e) {
-                LOGGER.error(e.getLocalizedMessage());
+                logger.warn("[Push Conf] Update conf sleep interrupted.");
             }
         }
-        return list;
-    }
 
-    private List<ReqStatus> aggregateByKey(List<ReqStatus> raw, boolean group, boolean slbServer, Long slbId) {
-        Map<String, ReqStatus> result = new ConcurrentHashMap<>();
-        for (ReqStatus reqStatus : raw) {
-            String key = genKey(reqStatus, group, slbServer);
-            ReqStatus value = result.get(key);
-            if (group) {
-                result.put(key, TrafficStatusHelper.add(value, reqStatus, "", slbId, reqStatus.getGroupId(), null));
-                continue;
-            }
-            if (slbServer) {
-                result.put(key, TrafficStatusHelper.add(value, reqStatus, reqStatus.getHostName(), slbId, -1L, ""));
-                continue;
-            }
-            result.put(key, TrafficStatusHelper.add(value, reqStatus, "", slbId, -1L, ""));
+        StringBuilder sb = new StringBuilder();
+        sb.append("[Push Conf] Update conf failed. Result:\n");
+        sb.append("Failed:\n");
+        for (NginxResponse nr : result) {
+            sb.append(nr.toString()).append('\n');
         }
-        return new LinkedList<>(result.values());
-    }
-
-    private String genKey(ReqStatus reqStatus, boolean group, boolean slbServer) {
-        String time = formatter.format(reqStatus.getTime());
-        if (group)
-            return time + "-" + reqStatus.getGroupId();
-        if (slbServer)
-            return time + "-" + reqStatus.getHostName();
-        return time + "";
+        sb.append("Timeout:\n");
+        for (SlbServer server : slbServers) {
+            if (!finishedServer.contains(server.getIp())) {
+                sb.append(server.getIp()).append(',');
+            }
+        }
+        logger.error(sb.toString());
+        throw new Exception(sb.toString());
     }
 
     @Override
-    public List<ReqStatus> getTrafficStatusBySlb(String groupName, Long slbId, int count) throws Exception {
-        Slb slb = slbRepository.getById(slbId);
-        List<ReqStatus> list = new ArrayList<>();
-        for (SlbServer slbServer : slb.getSlbServers()) {
-            NginxClient nginxClient = NginxClient.getClient(buildRemoteUrl(slbServer.getIp()));
-            try {
-                list.addAll(nginxClient.getTrafficStatusByGroup(System.currentTimeMillis() - 60 * 1000L, groupName, count).getStatuses());
-            } catch (Exception e) {
-                LOGGER.error(e.getLocalizedMessage());
-            }
-        }
-        return list;
-    }
+    public void rollbackAllConf(List<SlbServer> slbServers) throws Exception {
+        Map<String, FutureTask<NginxResponse>> futureTasks = new HashMap<>();
 
-    @Override
-    public List<ReqStatus> getLocalTrafficStatus(Date time, int count) {
-        LinkedList<TrafficStatus> l = (LinkedList<TrafficStatus>) rollingTrafficStatus.getResult();
-        List<ReqStatus> result = new LinkedList<>();
-        int size = l.size();
-        TrafficStatus head = l.peekLast();
-        // In case of time diff from server fetchers
-        for (int i = 0; i < count + 1 && i < size; i++) {
-            TrafficStatus ts = l.pollLast();
-            if (formatter.format(time).equals(formatter.format(ts.getTime()))) {
-                result.addAll(ts.getReqStatuses());
-            }
+        logger.info("[Rollback Conf] Assign rolling back conf job to slb servers");
+        for (SlbServer slbServer : slbServers) {
+            final String ip = slbServer.getIp();
+            final NginxClient nginxClient = NginxClient.getClient(buildRemoteUrl(slbServer.getIp()));
+            FutureTask<NginxResponse> futureTask = new FutureTask<>(new Callable<NginxResponse>() {
+                @Override
+                public NginxResponse call() throws Exception {
+                    logger.info("[Rollback Conf] Start Rollback conf on server " + ip + ".");
+                    NginxResponse response = nginxClient.update(true);
+                    logger.info("[Rollback Conf] Finish Rollback conf on server " + ip + ". Success:" + response.getSucceed() + ".");
+                    return response;
+                }
+            });
+            threadPoolExecutor.execute(futureTask);
+            futureTasks.put(ip, futureTask);
         }
-        if (result.size() == 0) {
-            for (ReqStatus reqStatus : head.getReqStatuses()) {
-                result.add(new ReqStatus().setGroupId(reqStatus.getGroupId())
-                        .setGroupName(reqStatus.getGroupName())
-                        .setSlbId(reqStatus.getSlbId()).setTime(time));
-            }
-        }
-        return result;
-    }
 
-    @Override
-    public List<ReqStatus> getLocalTrafficStatus(Date time, String groupName, int count) {
-        LinkedList<TrafficStatus> l = (LinkedList<TrafficStatus>) rollingTrafficStatus.getResult();
-        List<ReqStatus> result = new LinkedList<>();
-        int size = l.size();
-        for (int i = 0; i < count && i < size; i++) {
-            for (ReqStatus reqStatus : l.pollLast().getReqStatuses()) {
-                if (reqStatus.getGroupName().equalsIgnoreCase(groupName)) {
-                    result.add(reqStatus);
+        logger.info("[Rollback Conf] Reading result from rolling back conf result.");
+        long start = System.nanoTime();
+
+        int sleepInterval = nginxFutureTimeout.get() / nginxFutureCheckTimes.get();
+        Set<String> finishedServer = new HashSet<>();
+        List<NginxResponse> result = new ArrayList<>();
+        for (int i = 0; i <= nginxFutureCheckTimes.get(); i++) {
+            for (String sip : futureTasks.keySet()) {
+                FutureTask<NginxResponse> futureTask = futureTasks.get(sip);
+                if (futureTask.isDone() && !finishedServer.contains(sip)) {
+                    finishedServer.add(sip);
+                    NginxResponse response = futureTask.get();
+                    result.add(response);
+                    if (response.getSucceed()) {
+                        logger.info("[Rollback Conf] Use success result from server " + sip + ". Cost:" + TimerUtils.nanoToMilli(System.nanoTime() - start) + "ms. Result:\n" + response.toString());
+                        return;
+                    }
                 }
             }
+            if (finishedServer.size() == futureTasks.size()) {
+                break;
+            }
+            try {
+                Thread.sleep(sleepInterval);
+            } catch (Exception e) {
+                logger.warn("[Rollback Conf] Rollback conf sleep interrupted.");
+            }
         }
-        return result;
-    }
 
-    private void writeConfToDisk(Long slbId, int version, List<Long> vsIds ,NginxOperator nginxOperator) throws Exception {
-        LOGGER.info("Start writing nginx configuration.");
-        // write nginx conf
-        writeNginxConf(slbId, version, nginxOperator);
-        // write server conf
-        writeServerConf(slbId, version,vsIds, nginxOperator);
-        // write upstream conf
-        writeUpstreamConf(slbId, version,vsIds, nginxOperator);
+        StringBuilder sb = new StringBuilder();
+        boolean success = true;
+        sb.append("[Rollback Conf] Rollback conf finished. Cost:" + TimerUtils.nanoToMilli(System.nanoTime() - start) + "ms. Result:\n");
+        for (NginxResponse nr : result) {
+            success = success & nr.getSucceed().booleanValue();
+            sb.append(nr.getServerIp()).append(':').append(nr.toString()).append('\n');
+        }
+        sb.append("Timeout:\n");
+        for (SlbServer server : slbServers) {
+            if (!finishedServer.contains(server.getIp())) {
+                success = false;
+                sb.append(server.getIp()).append(',');
+            }
+        }
+
+        if (success) {
+            logger.info(sb.toString());
+        } else {
+            logger.error(sb.toString());
+        }
     }
 
     private static String buildRemoteUrl(String ip) {
         return "http://" + ip + ":" + adminServerPort.get();
-    }
-
-    private void writeNginxConf(Long slbId, int version, NginxOperator nginxOperator) throws Exception {
-        String nginxConf = nginxConfService.getNginxConf(slbId, version);
-        if (nginxConf == null || nginxConf.isEmpty()) {
-            throw new IllegalStateException("the nginx conf must not be empty!");
-        }
-        nginxOperator.writeNginxConf(nginxConf);
-    }
-
-    private void writeServerConf(Long slbId, int version,List<Long> vsIds , NginxOperator nginxOperator) throws Exception {
-        List<NginxConfServerData> nginxConfServerDataList = nginxConfService.getNginxConfServer(slbId, version);
-        for (NginxConfServerData d : nginxConfServerDataList) {
-            if (vsIds.contains(d.getVsId()))
-            {
-                nginxOperator.writeServerConf(d.getVsId(), d.getContent());
-            }
-        }
-    }
-
-    private void writeUpstreamConf(Long slbId, int version,List<Long> vsIds , NginxOperator nginxOperator) throws Exception {
-        List<NginxConfUpstreamData> nginxConfUpstreamList = nginxConfService.getNginxConfUpstream(slbId, version);
-        for (NginxConfUpstreamData d : nginxConfUpstreamList) {
-            if (vsIds.contains(d.getVsId())){
-                nginxOperator.writeUpstreamsConf(d.getVsId(), d.getContent());
-            }
-        }
-    }
-
-    private void cleanConfOnDisk(Long slbId, int version, NginxOperator nginxOperator) throws Exception {
-        List<NginxConfServerData> nginxConfServerDataList = nginxConfService.getNginxConfServer(slbId, version);
-        List<Long> vslist = new ArrayList<>();
-        for (NginxConfServerData d : nginxConfServerDataList) {
-            vslist.add(d.getVsId());
-        }
-        nginxOperator.cleanConf(vslist);
     }
 }

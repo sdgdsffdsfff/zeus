@@ -1,13 +1,11 @@
 package com.ctrip.zeus.service.nginx;
 
 import com.ctrip.zeus.model.entity.DyUpstreamOpsData;
-import com.ctrip.zeus.model.entity.Slb;
-import com.ctrip.zeus.nginx.entity.NginxResponse;
-import com.ctrip.zeus.nginx.entity.NginxServerStatus;
-import com.ctrip.zeus.nginx.entity.ReqStatus;
+import com.ctrip.zeus.model.entity.SlbServer;
+import com.ctrip.zeus.nginx.entity.*;
 
-import java.util.Date;
 import java.util.List;
+import java.util.Set;
 
 /**
  * @author:xingchaowang
@@ -16,89 +14,50 @@ import java.util.List;
 public interface NginxService {
 
     /**
-     * write conf to disk
-     * @return the result of "ngnix -t"
+     * update nginx configs
+     *
+     * @param nginxConf
+     * @param entry
+     * @param cleanVsIds
+     * @param dyups
+     * @param needReload
+     * @param needTest
+     * @return List of nginx Response
      * @throws Exception
      */
-    NginxResponse writeToDisk(List<Long> vsIds, Long slbId,Integer slbVersion) throws Exception;
+    List<NginxResponse> update(String nginxConf,
+                               NginxConfEntry entry,
+                               Set<Long> updateVsIds,
+                               Set<Long> cleanVsIds,
+                               DyUpstreamOpsData[] dyups,
+                               boolean needReload,
+                               boolean needTest,
+                               boolean needDyups) throws Exception;
 
     /**
-     * write all server conf of nginx server conf in the slb
-     * @return is all success
+     * refresh nginx configs
+     *
+     * @param nginxConf
+     * @param entry
+     * @return List of nginx Response
      * @throws Exception
      */
-    boolean writeALLToDisk(Long slbId,Integer slbVersion ,  List<Long> vsIds) throws Exception;
+    NginxResponse refresh(String nginxConf, NginxConfEntry entry, boolean reload) throws Exception;
+
     /**
-     * write all server conf of nginx server conf in the slb
-     * @return list the results
+     * push config to slb servers
+     *
+     * @return Nginx Response
      * @throws Exception
      */
-    List<NginxResponse> writeALLToDiskListResult(Long slbId,Integer slbVersion, List<Long> vsIds) throws Exception;
+    NginxResponse updateConf(List<SlbServer> slbServers) throws Exception;
 
     /**
-     * load the colocated nginx server conf from disk
-     * @return result of "ngnix -s reload"
+     * Rollback  All  Conf
+     *
+     * @param slbServers
+     * @return List of nginx Response
      * @throws Exception
      */
-    NginxResponse load(Long slbId , Integer version) throws Exception;
-
-    /**
-     * load all nginx server conf in the slb from disk
-     * @param slbId slbname
-     * @return all response
-     * @throws Exception
-     */
-    List<NginxResponse> loadAll(Long slbId , Integer version) throws Exception;
-
-    /**
-     *write all and then load all , throw Exception while write failed
-     * @param slbId
-     * @return List<NginxResponse>
-     */
-    List<NginxResponse> writeAllAndLoadAll(Long slbId,Integer slbVersion ,List<Long> vsIds) throws Exception;
-
-    /**
-     *dy upstream ops api
-     * @param upsName dy upstream name
-     * @param upsCommands dy upstream commands
-     */
-    NginxResponse dyopsLocal(String upsName,String upsCommands)throws Exception;
-    /**
-     *dy upstream ops api
-     * @param slbId slbname
-     * @param dyups dy upstream info
-     */
-    List<NginxResponse> dyops(Long slbId,List<DyUpstreamOpsData> dyups)throws Exception;
-
-    /**
-     * fetch the status of colocated nginx server status
-     * @return
-     * @throws Exception
-     */
-    NginxServerStatus getStatus() throws Exception;
-
-    /**
-     * fetch the status of all nginx server in the slb
-     * @return
-     * @throws Exception
-     */
-    List<NginxServerStatus> getStatusAll(Long slbId) throws Exception;
-
-    /**
-     * get traffic status of nginx server cluster.
-     * @param slbId the slb name
-     * @return the traffic statuses
-     */
-    List<ReqStatus> getTrafficStatusBySlb(Long slbId, int count, boolean aggregatedByGroup, boolean aggregatedBySlbServer) throws Exception;
-
-    List<ReqStatus> getTrafficStatusBySlb(String groupName, Long slbId, int count) throws Exception;
-
-
-    /**
-     * get traffic status of local nginx server.
-     * @return the traffic status
-     */
-    List<ReqStatus> getLocalTrafficStatus(Date time, int count);
-
-    List<ReqStatus> getLocalTrafficStatus(Date time, String groupName, int count);
+    void rollbackAllConf(List<SlbServer> slbServers) throws Exception;
 }

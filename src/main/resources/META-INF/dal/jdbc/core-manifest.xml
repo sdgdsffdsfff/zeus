@@ -13,8 +13,18 @@
     <file path="core-tag.xml"/>
     <file path="core-task.xml"/>
     <file path="core-server.xml"/>
+    <file path="core-commit.xml"/>
+    <file path="core-defaultpage.xml"/>
+    <file path="core-message.xml"/>
 
     <file path="rel-vs.xml"/>
+    <file path="rel-group.xml"/>
+    <file path="rel-slb.xml"/>
+    <file path="rel-cert.xml"/>
     <file path="meta-vs.xml"/>
+    <file path="meta-group.xml"/>
+    <file path="meta-slb.xml"/>
+    <file path="meta-cert.xml"/>
+
 </manifest>
 

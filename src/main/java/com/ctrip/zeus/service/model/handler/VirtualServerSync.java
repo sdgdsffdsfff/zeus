@@ -9,17 +9,11 @@ import java.util.List;
  */
 public interface VirtualServerSync {
 
-    void addVirtualServer(VirtualServer virtualServer) throws Exception;
+    void add(VirtualServer virtualServer) throws Exception;
 
-    void updateVirtualServer(VirtualServer virtualServer) throws Exception;
+    void update(VirtualServer virtualServer) throws Exception;
 
-    void deleteVirtualServer(Long vsId) throws Exception;
+    void updateStatus(List<VirtualServer> virtualServers) throws Exception;
 
-    void deleteVirtualServers(Long[] vsIds) throws Exception;
-
-    @Deprecated
-    List<Long> port(VirtualServer[] vses) throws Exception;
-
-    @Deprecated
-    void port(VirtualServer vs) throws Exception;
+    void delete(Long vsId) throws Exception;
 }

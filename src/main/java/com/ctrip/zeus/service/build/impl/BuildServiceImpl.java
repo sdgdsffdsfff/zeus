@@ -1,19 +1,17 @@
 package com.ctrip.zeus.service.build.impl;
 
 import com.ctrip.zeus.dal.core.*;
-import com.ctrip.zeus.exceptions.NotFoundException;
 import com.ctrip.zeus.model.entity.*;
-import com.ctrip.zeus.model.transform.DefaultSaxParser;
-import com.ctrip.zeus.service.activate.ActivateService;
-import com.ctrip.zeus.service.activate.ActiveConfService;
+import com.ctrip.zeus.nginx.entity.*;
+import com.ctrip.zeus.nginx.transform.DefaultJsonParser;
 import com.ctrip.zeus.service.build.BuildInfoService;
 import com.ctrip.zeus.service.build.BuildService;
 import com.ctrip.zeus.service.build.NginxConfBuilder;
-import com.ctrip.zeus.service.build.NginxConfService;
+import com.ctrip.zeus.service.build.conf.ConfWriter;
 import com.ctrip.zeus.service.build.conf.UpstreamsConf;
-import com.ctrip.zeus.service.model.GroupRepository;
-import com.ctrip.zeus.service.status.StatusService;
-import com.ctrip.zeus.util.AssertUtils;
+import com.ctrip.zeus.service.version.ConfVersionService;
+import com.ctrip.zeus.support.GenericSerializer;
+import com.ctrip.zeus.util.CompressUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -27,265 +25,123 @@ import java.util.*;
  */
 @Service("buildService")
 public class BuildServiceImpl implements BuildService {
+
     @Resource
     private BuildInfoService buildInfoService;
-
     @Resource
-    private NginxConfService nginxConfService;
-
-    @Resource
-    private NginxServerDao nginxServerDao;
-    @Resource
-    private ActiveConfService activeConfService;
-    @Resource
-    private GroupRepository groupRepository;
+    private UpstreamsConf upstreamsConf;
     @Resource
     ConfGroupSlbActiveDao confGroupSlbActiveDao;
     @Resource
+    ConfVersionService confVersionService;
+    @Resource
     private NginxConfBuilder nginxConfigBuilder;
     @Resource
+    private NginxConfSlbDao nginxConfSlbDao;
+    @Resource
     private NginxConfDao nginxConfDao;
-    @Resource
-    private NginxConfServerDao nginxConfServerDao;
-    @Resource
-    private NginxConfUpstreamDao nginxConfUpstreamDao;
-    @Resource
-    private StatusService statusService;
-    @Resource
-    private ActivateService activateService;
 
     private Logger logger = LoggerFactory.getLogger(this.getClass());
 
     @Override
-    public boolean build(Long slbId , int ticket) throws Exception {
-        int paddingTicket = buildInfoService.getPaddingTicket( slbId );
-        ticket = paddingTicket>ticket?paddingTicket:ticket;
-        if (!buildInfoService.updateTicket(slbId, ticket))
-        {
-            return false;
-        }
-        nginxConfService.build(slbId, ticket);
-        return  true;
-    }
+    public Long build(Slb onlineSlb,
+                      Map<Long, VirtualServer> onlineVses,
+                      Set<Long> needBuildVses,
+                      Set<Long> deactivateVses,
+                      Map<Long, List<Group>> vsGroups,
+                      Set<String> allDownServers,
+                      Set<String> allUpGroupServers) throws Exception {
+        int version = buildInfoService.getTicket(onlineSlb.getId());
+        Long currentVersion = confVersionService.getSlbCurrentVersion(onlineSlb.getId());//buildInfoService.getCurrentTicket(onlineSlb.getId());
 
-    @Override
-    public List<VirtualServer> getNeedBuildVirtualServers(Long slbId,HashMap<Long , Group> activatingGroups , Set<Long>groupList)throws Exception{
-        Set<Long> buildVirtualServer = new HashSet<>();
-        List<Group> groups = new ArrayList<>();
-        List<String> l = activeConfService.getConfGroupActiveContentByGroupIds(groupList.toArray(new Long[]{}));
-        for (String content :  l ){
-            Group tmpGroup = DefaultSaxParser.parseEntity(Group.class, content);
-            if (tmpGroup!=null&&!activatingGroups.containsKey(tmpGroup.getId())) {
-                groups.add(tmpGroup);
-            }
-        }
-        groups.addAll(activatingGroups.values());
-        for (Group group : groups) {
-            for (GroupVirtualServer gvs : group.getGroupVirtualServers()) {
-                if (gvs.getVirtualServer().getSlbId().equals(slbId))
-                {
-                    buildVirtualServer.add(gvs.getVirtualServer().getId());
-                }
-            }
-        }
-        Slb slb = activateService.getActivatedSlb(slbId);
+        String conf = nginxConfigBuilder.generateNginxConf(onlineSlb);
 
-        List<VirtualServer> result = new ArrayList<>();
-        List<VirtualServer> vses = slb.getVirtualServers();
-        for (VirtualServer vs : vses){
-            if (buildVirtualServer.contains(vs.getId())){
-                result.add(vs);
-            }
-        }
-        return result;
-    }
+        nginxConfDao.insert(new NginxConfDo().setSlbId(onlineSlb.getId()).setContent(conf).setVersion(version));
+        logger.info("Nginx Conf build success! slbId: " + onlineSlb.getId() + ", version: " + version);
 
-    @Override
-    public Map<Long, List<Group>> getInfluencedVsGroups(Long slbId,HashMap<Long,Group>activatingGroups,List<VirtualServer>buildVirtualServer,Set<Long> deactivateGroup)throws Exception{
-        Map<Long, Map<Long,Integer>> groupMap = new HashMap<>();
-        List<ConfGroupSlbActiveDo> groupSlbActiveList = confGroupSlbActiveDao.findBySlbId(slbId , ConfGroupSlbActiveEntity.READSET_FULL);
-        if (groupSlbActiveList==null){
-            groupSlbActiveList=new ArrayList<>();
+        NginxConfSlbDo d = nginxConfSlbDao.findBySlbAndVersion(onlineSlb.getId(), currentVersion, NginxConfSlbEntity.READSET_FULL);
+        // init current conf entry in case of generating conf file for entirely new cluster
+        NginxConfEntry currentConfEntry = new NginxConfEntry().setUpstreams(new Upstreams()).setVhosts(new Vhosts());
+        if (d != null) {
+            currentConfEntry = DefaultJsonParser.parse(NginxConfEntry.class, CompressUtils.decompress(d.getContent()));
         }
-        for (ConfGroupSlbActiveDo groupSlb : groupSlbActiveList)
-        {
-            if (activatingGroups.containsKey(groupSlb.getGroupId())){
+
+        NginxConfEntry nextConfEntry = new NginxConfEntry().setUpstreams(new Upstreams()).setVhosts(new Vhosts());
+        Set<String> fileTrack = new HashSet<>();
+        for (Long vsId : needBuildVses) {
+            if (deactivateVses.contains(vsId)) {
                 continue;
             }
-            if (deactivateGroup.contains(groupSlb.getGroupId())){
-                continue;
-            }
-            long vs = groupSlb.getSlbVirtualServerId();
-            Map<Long,Integer> groups = groupMap.get(vs);
-            if (groups==null)
-            {
-                groups = new HashMap<>();
-                groupMap.put(vs,groups);
-            }
-
-            groups.put(groupSlb.getGroupId(),groupSlb.getPriority());
-        }
-        for (Long id : activatingGroups.keySet()){
-            List<GroupVirtualServer> groupVirtualServers=activatingGroups.get(id).getGroupVirtualServers();
-            for (GroupVirtualServer gvs : groupVirtualServers){
-                if (!gvs.getVirtualServer().getSlbId().equals(slbId)){
-                    continue;
-                }
-                Long  vsid = gvs.getVirtualServer().getId();
-                Map<Long,Integer> groups = groupMap.get(vsid);
-                if (groups==null)
-                {
-                    groups = new HashMap<>();
-                    groupMap.put(vsid,groups);
-                }
-                groups.put(id,gvs.getPriority());
-            }
-        }
-
-        Map<Long, List<Group>> groupsMap = new HashMap<>();
-        for (VirtualServer vs : buildVirtualServer){
-            final Map<Long,Integer> groupPriorityMap = groupMap.get(vs.getId());
-
-            List<Group> groupList = new ArrayList<>();
-            List<Long> groupInDb = new ArrayList<>();
-            if (groupPriorityMap==null){
-                groupsMap.put(vs.getId(), groupList);
-                continue;
-            }
-            Set<Long> groupIds =groupPriorityMap.keySet();
-            for (Long gid : groupIds){
-                Group group = activatingGroups.get(gid);
-                if (group!=null){
-                    groupList.add(group);
-                }else {
-                    groupInDb.add(gid);
-                }
-            }
-            List<String> l = activeConfService.getConfGroupActiveContentByGroupIds(groupInDb.toArray(new Long[]{}));
-            for (String content :  l ){
-                Group tmpGroup = DefaultSaxParser.parseEntity(Group.class, content);
-                groupList.add(tmpGroup);
-            }
-            Collections.sort(groupList,new Comparator<Group>(){
-                public int compare(Group group0, Group group1) {
-                    if (groupPriorityMap.get(group1.getId())==groupPriorityMap.get(group0.getId()))
-                    {
-                        return (int)(group1.getId()-group0.getId());
-                    }
-                    return groupPriorityMap.get(group1.getId())-groupPriorityMap.get(group0.getId());
-                }
-            });
-            groupsMap.put(vs.getId(), groupList);
-        }
-        return groupsMap;
-    }
-
-    @Override
-    public void build(Long slbId,
-                      Slb activatedSlb,
-                      List<VirtualServer>buildVirtualServer,
-                      Map<Long,List<Group>>groupsMap,
-                      Set<String>allDownServers,
-                      Set<String>allUpGroupServers
-                      )throws Exception{
-        int version = buildInfoService.getTicket(slbId);
-        int currentVersion = buildInfoService.getCurrentTicket(slbId);
-        Slb slb = null;
-        if (activatedSlb != null){
-            slb = activatedSlb;
-        }else{
-            slb = activateService.getActivatedSlb(slbId);
-        }
-
-        String conf = nginxConfigBuilder.generateNginxConf(slb);
-        nginxConfDao.insert(new NginxConfDo().setCreatedTime(new Date())
-                .setSlbId(slb.getId())
-                .setContent(conf)
-                .setVersion(version));
-        logger.debug("Nginx Conf build sucess! slbName: "+slb+",version: "+version);
-
-
-        List<NginxConfServerDo> nginxConfServerDoList = nginxConfServerDao.findAllBySlbIdAndVersion(slbId,currentVersion,NginxConfServerEntity.READSET_FULL);
-        List<NginxConfUpstreamDo> nginxConfUpstreamDoList = nginxConfUpstreamDao.findAllBySlbIdAndVersion(slbId,currentVersion,NginxConfUpstreamEntity.READSET_FULL);
-        Map <Long , NginxConfServerDo> nginxConfServerDoMap = new HashMap<>();
-        Map<Long,NginxConfUpstreamDo> nginxConfUpstreamDoMap = new HashMap<>();
-
-        for (VirtualServer vs : buildVirtualServer) {
-            List<Group> groups = groupsMap.get(vs.getId());
+            VirtualServer virtualServer = onlineVses.get(vsId);
+            List<Group> groups = vsGroups.get(vsId);
             if (groups == null) {
                 groups = new ArrayList<>();
             }
 
-            String serverConf = nginxConfigBuilder.generateServerConf(slb, vs, groups);
-            String upstreamConf = nginxConfigBuilder.generateUpstreamsConf(slb, vs, groups, allDownServers, allUpGroupServers);
+            String serverConf = nginxConfigBuilder.generateServerConf(onlineSlb, virtualServer, groups);
+            nextConfEntry.getVhosts().addConfFile(new ConfFile().setName("" + virtualServer.getId()).setContent(serverConf));
 
-            nginxConfServerDoMap.put(vs.getId(), new NginxConfServerDo().setCreatedTime(new Date())
-                    .setSlbId(slb.getId())
-                    .setSlbVirtualServerId(vs.getId())
-                    .setContent(serverConf)
-                    .setVersion(version));
-
-            nginxConfUpstreamDoMap.put(vs.getId(),new NginxConfUpstreamDo().setCreatedTime(new Date())
-                    .setSlbId(slb.getId())
-                    .setSlbVirtualServerId(vs.getId())
-                    .setContent(upstreamConf)
-                    .setVersion(version));
-        }
-        List<Long> slbVirtualServers = new ArrayList<>();
-        for (VirtualServer virtualServer: slb.getVirtualServers()){
-            slbVirtualServers.add(virtualServer.getId());
+            List<ConfFile> list = nginxConfigBuilder.generateUpstreamsConf(onlineVses.keySet(), virtualServer, groups, allDownServers, allUpGroupServers, fileTrack);
+            for (ConfFile cf : list) {
+                nextConfEntry.getUpstreams().addConfFile(cf);
+            }
         }
 
-        for (NginxConfServerDo nginxConfServerDo : nginxConfServerDoList){
-            if (!slbVirtualServers.contains(nginxConfServerDo.getSlbVirtualServerId())){
-                continue;
-            }
-            if (!nginxConfServerDoMap.containsKey(nginxConfServerDo.getSlbVirtualServerId())){
-                nginxConfServerDoMap.put(nginxConfServerDo.getSlbVirtualServerId(),nginxConfServerDo.setVersion(version));
-            }
-        }
-        for (NginxConfUpstreamDo nginxConfUpstreamDo : nginxConfUpstreamDoList){
-            if (!slbVirtualServers.contains(nginxConfUpstreamDo.getSlbVirtualServerId())){
-                continue;
-            }
-            if (!nginxConfUpstreamDoMap.containsKey(nginxConfUpstreamDo.getSlbVirtualServerId())){
-                nginxConfUpstreamDoMap.put(nginxConfUpstreamDo.getSlbVirtualServerId(),nginxConfUpstreamDo.setVersion(version));
+        for (ConfFile cf : currentConfEntry.getVhosts().getFiles()) {
+            try {
+                Long vsId = Long.parseLong(cf.getName());
+                if (deactivateVses.contains(vsId) || needBuildVses.contains(vsId)) {
+                    continue;
+                } else {
+                    nextConfEntry.getVhosts().addConfFile(cf);
+                }
+            } catch (NumberFormatException ex) {
+                logger.error("Unable to extract vs id information from vhost file: " + cf.getName() + ".");
             }
         }
-        nginxConfServerDao.insert(nginxConfServerDoMap.values().toArray(new NginxConfServerDo[]{}));
-        nginxConfUpstreamDao.insert(nginxConfUpstreamDoMap.values().toArray(new NginxConfUpstreamDo[]{}));
+
+        for (ConfFile cf : currentConfEntry.getUpstreams().getFiles()) {
+            String[] fn = cf.getName().split("_");
+            boolean add = true;
+            for (String relatedVsId : fn) {
+                if (relatedVsId.isEmpty()) continue;
+
+                Long vsId = 0L;
+                try {
+                    vsId = Long.parseLong(relatedVsId);
+                } catch (NumberFormatException ex) {
+                    add = false;
+                    logger.warn("Unable to extract vs id information from upstream file: " + cf.getName() + ".");
+                    continue;
+                }
+                if (deactivateVses.contains(vsId) || needBuildVses.contains(vsId)) {
+                    if (add) add = false;
+                }
+            }
+            if (add) {
+                nextConfEntry.getUpstreams().addConfFile(cf);
+            }
+        }
+        nginxConfSlbDao.insert(new NginxConfSlbDo().setSlbId(onlineSlb.getId()).setVersion(version)
+                .setContent(CompressUtils.compress(GenericSerializer.writeJson(nextConfEntry, false))));
+        return (long)version;
     }
 
 
-    public List<DyUpstreamOpsData> buildUpstream(Long slbId, Set<String>allDownServers ,Set<String> allUpGroupServers,Group group ) throws Exception {
-        Slb slb = activateService.getActivatedSlb(slbId);
-        AssertUtils.assertNotNull(slb, "Not found slb content by slbId!");
-        HashMap<Long,VirtualServer> tmpVirtualServers = new HashMap<>();
-        for (VirtualServer virtualServer : slb.getVirtualServers()){
-            tmpVirtualServers.put(virtualServer.getId(),virtualServer);
-        }
-        List<DyUpstreamOpsData> result = new ArrayList<>();
-
-        List<GroupVirtualServer> groupSlbList = group.getGroupVirtualServers();
-        VirtualServer vs = null;
-        for (GroupVirtualServer groupSlb : groupSlbList )
-        {
-            if (!tmpVirtualServers.containsKey(groupSlb.getVirtualServer().getId())){
-                 continue;
-            }
-            vs = tmpVirtualServers.get(groupSlb.getVirtualServer().getId());
-            String upstreambody = UpstreamsConf.buildUpstreamConfBody(slb, vs, group, allDownServers, allUpGroupServers);
-            String upstreamName = UpstreamsConf.buildUpstreamName(slb,vs,group);
-            result.add(new DyUpstreamOpsData().setUpstreamCommands(upstreambody).setUpstreamName(upstreamName));
-        }
-
-        return result;
+    public DyUpstreamOpsData buildUpstream(Long slbId,
+                                           VirtualServer virtualServer,
+                                           Set<String> allDownServers,
+                                           Set<String> allUpGroupServers,
+                                           Group group) throws Exception {
+        ConfWriter confWriter = new ConfWriter();
+        upstreamsConf.writeUpstream(confWriter, slbId, virtualServer, group, allDownServers, allUpGroupServers);
+        String upstreamBody = confWriter.getValue();
+        return new DyUpstreamOpsData().setUpstreamCommands(upstreamBody).setUpstreamName(UpstreamsConf.getUpstreamName(group.getId()));
     }
 
     @Override
     public void rollBackConfig(Long slbId, int version) throws Exception {
-        nginxConfServerDao.deleteBySlbIdFromVersion(new NginxConfServerDo().setSlbId(slbId).setVersion(version));
         nginxConfDao.deleteBySlbIdFromVersion(new NginxConfDo().setSlbId(slbId).setVersion(version));
-        nginxConfUpstreamDao.deleteBySlbIdFromVersion(new NginxConfUpstreamDo().setSlbId(slbId).setVersion(version));
+        nginxConfSlbDao.deleteBySlbIdFromVersion(new NginxConfSlbDo().setSlbId(slbId).setVersion(version));
     }
 }

@@ -1,8 +1,7 @@
 package com.ctrip.zeus.auth.impl;
 
-import com.netflix.config.DynamicBooleanProperty;
+import com.ctrip.zeus.auth.util.AuthUserUtil;
 import com.netflix.config.DynamicPropertyFactory;
-import com.netflix.config.DynamicStringProperty;
 import org.jasig.cas.client.util.AbstractCasFilter;
 import org.jasig.cas.client.validation.Assertion;
 import org.jasig.cas.client.validation.AssertionImpl;
@@ -14,8 +13,10 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.http.HttpSession;
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Authenticate with ip.
@@ -25,35 +26,23 @@ import java.util.Map;
  * Time: 3:00 PM
  */
 public class IPAuthenticationFilter implements Filter{
-    private static final Logger logger = LoggerFactory.getLogger(IPAuthenticationFilter.class);
-    DynamicStringProperty ipUserStr = DynamicPropertyFactory.getInstance().getStringProperty("ip.authentication", "127.0.0.1,172.16.144.61=releaseSys");
-    private static final String SLB_SERVER_USER = "slbServer";
-    public static final String SERVER_TOKEN_HEADER = "SlbServerToken";
-    private DynamicBooleanProperty enableAuthorize = DynamicPropertyFactory.getInstance().getBooleanProperty("server.authorization.enable", false);
 
-    private volatile Map<String, String> ipUserMap = new HashMap<>();
+    private static final String IP_AUTHENTICATION_PREFIX = "ip.authentication";
+    private static final Logger logger = LoggerFactory.getLogger(IPAuthenticationFilter.class);
+    public static final String SERVER_TOKEN_HEADER = "SlbServerToken";
+    private DynamicPropertyFactory factory = DynamicPropertyFactory.getInstance();
 
     @Override
     public void init(FilterConfig filterConfig) {
-        ipUserMap = parseIpUserStr(ipUserStr.get());
-        ipUserStr.addCallback(new Runnable() {
-                @Override
-                public void run() {
-                    logger.info(ipUserStr.get());
-                    ipUserMap = parseIpUserStr(ipUserStr.get());
-                    logger.info(ipUserMap.toString());
-                }
-        });
     }
-
 
     public final void doFilter(final ServletRequest servletRequest, final ServletResponse servletResponse, final FilterChain filterChain) throws IOException, ServletException {
         final HttpServletRequest request = (HttpServletRequest) servletRequest;
         final HttpServletResponse response = (HttpServletResponse) servletResponse;
         final HttpSession session = request.getSession(false);
         //1. turn off auth
-        if (!enableAuthorize.get()){
-            setAssertion(request, SLB_SERVER_USER);
+        if (!factory.getBooleanProperty("server.authorization.enable", false).get()){
+            setAssertion(request, AuthUserUtil.SLB_SERVER_USER);
             filterChain.doFilter(request,response);
             return;
         }
@@ -68,7 +57,7 @@ public class IPAuthenticationFilter implements Filter{
         String slbServerToken = request.getHeader(SERVER_TOKEN_HEADER);
         if (slbServerToken != null){
             if (TokenManager.validateToken(slbServerToken)){
-                setAssertion(request, SLB_SERVER_USER);
+                setAssertion(request, AuthUserUtil.SLB_SERVER_USER);
                 filterChain.doFilter(request,response);
                 return;
             }
@@ -76,7 +65,7 @@ public class IPAuthenticationFilter implements Filter{
 
         //4. if the request is from in ip white list, then authenticate it using the ip white list.
         String clientIP = getClientIP(request);
-        String ipUser = getIpUser(clientIP);
+        String ipUser = getIpUser(IP_AUTHENTICATION_PREFIX, AuthUserUtil.getAuthUsers(), clientIP);
         if (ipUser != null){
             logger.info("Authenticated by IP: " + clientIP + " Assigned userName:" + ipUser);
             setAssertion(request, ipUser);
@@ -116,9 +105,27 @@ public class IPAuthenticationFilter implements Filter{
         return result;
     }
 
-    private String getIpUser(String clientIP) {
-        String user = ipUserMap.get(clientIP);
-        return user;
+    private String getIpUser(String prefix, Set<String> types, String value) {
+        if (prefix == null || types == null || types.size() == 0 || value == null)
+            return null;
+
+        String typeValue;
+        for (String typeName : types) {
+            typeValue = factory.getStringProperty(prefix + "." + typeName, null).get();
+            if (typeValue != null && Arrays.asList(typeValue.split(",")).contains(value)) {
+                return typeName;
+            }
+        }
+
+        String defaultValue = factory.getStringProperty(prefix + ".default", null).get();
+        Map<String, String> valueKeyMap = parseIpUserStr(defaultValue);
+
+        for (Map.Entry entry : valueKeyMap.entrySet()) {
+            if (entry.getKey().equals(value))
+                return entry.getValue().toString();
+        }
+
+        return null;
     }
 
     private String getClientIP(HttpServletRequest request) {

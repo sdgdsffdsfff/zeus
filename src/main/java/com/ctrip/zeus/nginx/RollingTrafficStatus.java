@@ -10,7 +10,6 @@ import java.util.*;
 /**
  * Created by zhoumy on 2015/5/6.
  */
-@Component("rollingTrafficStatus")
 public class RollingTrafficStatus {
     private final CircularArray buckets;
     private final int numberOfBuckets;
@@ -76,7 +75,7 @@ public class RollingTrafficStatus {
 
         public void clearDirty(long stamp) {
             long expectedEarlist = stamp - interval * 1000 * numberOfBuckets;
-            while(!buckets.isEmpty()) {
+            while (!buckets.isEmpty()) {
                 if (buckets.getFirst().getTime().getTime() > expectedEarlist) {
                     break;
                 } else {
@@ -157,7 +156,7 @@ public class RollingTrafficStatus {
 
     protected static void extractStubStatus(Long[] data, TrafficStatus trafficStatus, Long[] current) {
         Long requests = data[StubStatusOffset.Requests.ordinal()];
-        double responseTime = (requests == null || requests == 0) ? 0.0 : (double)data[StubStatusOffset.RequestTime.ordinal()] / requests;
+        double responseTime = (requests == null || requests == 0) ? 0.0 : (double) data[StubStatusOffset.RequestTime.ordinal()] / requests;
         trafficStatus.setActiveConnections(current[StubStatusOffset.ActiveConn.ordinal()])
                 .setAccepts(data[StubStatusOffset.Accepts.ordinal()])
                 .setHandled(data[StubStatusOffset.Handled.ordinal()])

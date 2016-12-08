@@ -20,6 +20,7 @@ import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Created by zhoumy on 2015/7/20.
@@ -41,12 +42,20 @@ public class PropertyResource {
                                    @Context HttpServletRequest request,
                                    @QueryParam("type") String type,
                                    @QueryParam("targetId") Long targetId) throws Exception {
-        List<Property> list;
-        if (type != null && targetId != null) {
-            list = propertyService.getProperties(type, targetId);
-        } else {
-            list = propertyBox.getAllProperties();
+        List<Property> list = null;
+        if (type != null) {
+            if (targetId != null) {
+                list = propertyService.getProperties(type, targetId);
+            } else {
+                Set<Long> propIds = propertyService.queryByType(type);
+                list = propertyService.getProperties(propIds.toArray(new Long[propIds.size()]));
+            }
         }
+
+        if (list == null) {
+            list = propertyService.getAllProperties();
+        }
+
         PropertyList propertyList = new PropertyList().setTotal(list.size());
         for (Property property : list) {
             propertyList.addProperty(property);
@@ -55,38 +64,7 @@ public class PropertyResource {
     }
 
     @GET
-    @Path("/property/rename")
-    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
-    public Response renameProperty(@Context HttpHeaders hh,
-                                   @Context HttpServletRequest request,
-                                   @QueryParam("oldName") String oldName,
-                                   @QueryParam("newName") String newName,
-                                   @QueryParam("name") String name,
-                                   @QueryParam("oldValue") String oldValue,
-                                   @QueryParam("newValue") String newValue,
-                                   @QueryParam("batch") Boolean batch) throws Exception {
-        if ((oldName == null || newName == null) && name == null)
-            throw new ValidationException("Property name is missing.");
-        if (batch != null && batch.booleanValue()) {
-            if (oldName == null || newName == null)
-                throw new ValidationException("Batch job cannot be done without oldName and newName given.");
-            if (oldValue != null && newValue != null)
-                throw new ValidationException("Parameter conflicts.");
-            propertyBox.renameProperty(oldName, newName);
-            return responseHandler.handle("Property named " + oldName + "is replaced by " + newName + ".", hh.getMediaType());
-        }
-        if (oldValue == null || newValue == null)
-            throw new ValidationException("Property value is missing.");
-        if (name != null) {
-            propertyBox.renameProperty(name, name, oldValue, newValue);
-            return responseHandler.handle(name + "/" + oldValue + " is replaced by " + name + "/" + newValue + ".", hh.getMediaType());
-        }
-        propertyBox.renameProperty(oldName, newName, oldValue, newValue);
-        return responseHandler.handle(oldName + "/" + oldValue + " is replaced by " + newName + "/" + newValue + ".", hh.getMediaType());
-    }
-
-    @GET
-    @Path("/property/add")
+    @Path("/property/set")
     @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
     public Response addPropertyItem(@Context HttpHeaders hh,
                                     @Context HttpServletRequest request,
@@ -96,31 +74,47 @@ public class PropertyResource {
                                     @QueryParam("targetId") List<Long> targetIds) throws Exception {
         if (pname == null || pvalue == null || type == null || targetIds == null)
             throw new ValidationException("At least one parameter is missing.");
-        propertyBox.add(pname, pvalue, type, targetIds.toArray(new Long[targetIds.size()]));
-        return responseHandler.handle(Joiner.on(", ").join(targetIds) + " is added to property " + pname + "/" + pvalue + ".", hh.getMediaType());
+        propertyBox.set(pname, pvalue, type, targetIds.toArray(new Long[targetIds.size()]));
+        return responseHandler.handle(Joiner.on(",").join(targetIds) + " is/are added to property " + pname + "/" + pvalue + ".", hh.getMediaType());
     }
 
     @GET
-    @Path("/property/delete")
+    @Path("/property/clear")
     @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
     public Response deletePropertyItem(@Context HttpHeaders hh,
                                        @Context HttpServletRequest request,
                                        @QueryParam("pname") String pname,
                                        @QueryParam("pvalue") String pvalue,
                                        @QueryParam("type") String type,
-                                       @QueryParam("targetId") List<Long> targetIds,
-                                       @QueryParam("batch") Boolean batch) throws Exception {
-        if ((pname == null && pvalue == null) || type == null)
-            throw new ValidationException("At least one parameter is missing.");
-        if (targetIds != null) {
-            propertyBox.delete(pname, pvalue, type, targetIds.toArray(new Long[targetIds.size()]));
-            return responseHandler.handle(Joiner.on(", ").join(targetIds) + " is deleted from property " + pname + "/" + pvalue + ".", hh.getMediaType());
+                                       @QueryParam("targetId") List<Long> targetIds) throws Exception {
+        if (targetIds == null && type == null) {
+            throw new ValidationException("Query parameter targetId and type are required.");
         }
-        if (batch != null && batch.booleanValue()) {
-            propertyBox.delete(pname, pvalue, type, null);
-            return responseHandler.handle("Deleted all properties with type - " + type + " from " + pname + "/" + pvalue + ".", hh.getMediaType());
 
+        if (pname == null && pvalue == null) {
+            for (Long tId : targetIds) {
+                propertyBox.clear(type, tId);
+            }
+            return responseHandler.handle("Successfully clear property from " + type + " " + Joiner.on(",").join(targetIds) + ".", hh.getMediaType());
         }
-        return responseHandler.handle("No action is performed.", hh.getMediaType());
+
+        if (pname == null || pvalue == null) {
+            throw new ValidationException("Both pname and pvalue is required.");
+        }
+        propertyBox.clear(pname, pvalue, type, targetIds.toArray(new Long[targetIds.size()]));
+        return responseHandler.handle(Joiner.on(",").join(targetIds) + " is/are deleted from property " + pname + "/" + pvalue + ".", hh.getMediaType());
+    }
+
+    @GET
+    @Path("/property/delete")
+    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
+    public Response deleteProperty(@Context HttpHeaders hh,
+                                   @Context HttpServletRequest request,
+                                   @QueryParam("pname") String pname,
+                                   @QueryParam("force") Boolean force) throws Exception {
+        if (pname == null) throw new ValidationException("Parameter pname is required.");
+        boolean forceEnabled = force != null && force;
+        propertyBox.removeProperty(pname, forceEnabled);
+        return responseHandler.handle("Successfully deleted property " + pname + ".", hh.getMediaType());
     }
 }

@@ -1,19 +1,14 @@
 package com.ctrip.zeus.service.model.handler.impl;
 
 import com.ctrip.zeus.dal.core.*;
-import com.ctrip.zeus.model.entity.Domain;
+import com.ctrip.zeus.exceptions.ValidationException;
 import com.ctrip.zeus.model.entity.VirtualServer;
+import com.ctrip.zeus.service.model.VersionUtils;
 import com.ctrip.zeus.service.model.handler.VirtualServerSync;
-import com.ctrip.zeus.support.C;
-import com.google.common.base.Function;
-import com.google.common.collect.Maps;
 import org.springframework.stereotype.Component;
-import org.unidal.dal.jdbc.DalException;
 
 import javax.annotation.Resource;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 /**
  * Created by zhoumy on 2015/9/22.
@@ -23,107 +18,81 @@ public class VirtualServerEntityManager implements VirtualServerSync {
     @Resource
     private SlbVirtualServerDao slbVirtualServerDao;
     @Resource
-    private RVsDomainDao rVsDomainDao;
+    private VsDomainRelMaintainer vsDomainRelMaintainer;
     @Resource
-    private RVsSlbDao rVsSlbDao;
+    private VsSlbRelMaintainer vsSlbRelMaintainer;
     @Resource
-    private MVsContentDao mVsContentDao;
+    private ArchiveVsDao archiveVsDao;
+    @Resource
+    private RVsStatusDao rVsStatusDao;
 
     @Override
-    public void addVirtualServer(VirtualServer virtualServer) throws Exception {
-        SlbVirtualServerDo d = C.toSlbVirtualServerDo(0L, virtualServer.getSlbId(), virtualServer);
+    public void add(VirtualServer virtualServer) throws Exception {
+        virtualServer.setVersion(1);
+        SlbVirtualServerDo d = toSlbVirtualServerDo(virtualServer);
         slbVirtualServerDao.insert(d);
+
         Long vsId = d.getId();
         virtualServer.setId(vsId);
-        mVsContentDao.insertOrUpdate(new MetaVsContentDo().setVsId(vsId).setContent(ContentWriters.writeVirtualServerContent(virtualServer)));
+        archiveVsDao.insert(new MetaVsArchiveDo().setVsId(vsId).setVersion(virtualServer.getVersion())
+                .setContent(ContentWriters.writeVirtualServerContent(virtualServer))
+                .setHash(VersionUtils.getHash(virtualServer.getId(), virtualServer.getVersion())));
 
-        rVsSlbDao.insert(new RelVsSlbDo().setVsId(vsId).setSlbId(virtualServer.getSlbId()));
-        relSyncDomain(vsId, virtualServer.getDomains());
+        rVsStatusDao.insert(new RelVsStatusDo().setVsId(vsId).setOfflineVersion(virtualServer.getVersion()));
+
+        vsSlbRelMaintainer.insert(virtualServer);
+        vsDomainRelMaintainer.insert(virtualServer);
     }
 
     @Override
-    public void updateVirtualServer(VirtualServer virtualServer) throws Exception {
-        Long vsId = virtualServer.getId();
-        SlbVirtualServerDo d = C.toSlbVirtualServerDo(vsId, virtualServer.getSlbId(), virtualServer);
-        slbVirtualServerDao.insertOrUpdate(d);
-        mVsContentDao.insertOrUpdate(new MetaVsContentDo().setVsId(vsId).setContent(ContentWriters.writeVirtualServerContent(virtualServer)));
-
-        if (rVsSlbDao.findSlbByVs(virtualServer.getId(), RVsSlbEntity.READSET_FULL).getSlbId() != virtualServer.getSlbId().longValue()) {
-            RelVsSlbDo rel = new RelVsSlbDo().setVsId(vsId).setSlbId(virtualServer.getSlbId());
-            rVsSlbDao.deleteByVs(rel);
-            rVsSlbDao.insert(rel);
+    public void update(VirtualServer virtualServer) throws Exception {
+        RelVsStatusDo check = rVsStatusDao.findByVs(virtualServer.getId(), RVsStatusEntity.READSET_FULL);
+        if (check.getOfflineVersion() > virtualServer.getVersion()) {
+            throw new ValidationException("Newer virtual server version is detected.");
         }
-        relSyncDomain(vsId, virtualServer.getDomains());
+        if (check.getOfflineVersion() != virtualServer.getVersion()) {
+            throw new ValidationException("Incompatible virtual server version.");
+        }
+
+        virtualServer.setVersion(virtualServer.getVersion() + 1);
+
+        SlbVirtualServerDo d = toSlbVirtualServerDo(virtualServer);
+        slbVirtualServerDao.updateByPK(d, SlbVirtualServerEntity.UPDATESET_FULL);
+
+        archiveVsDao.insert(new MetaVsArchiveDo().setVsId(virtualServer.getId()).setContent(ContentWriters.writeVirtualServerContent(virtualServer))
+                .setVersion(virtualServer.getVersion())
+                .setHash(VersionUtils.getHash(virtualServer.getId(), virtualServer.getVersion())));
+
+        rVsStatusDao.insertOrUpdate(check.setOfflineVersion(virtualServer.getVersion()));
+
+        vsSlbRelMaintainer.refreshOffline(virtualServer);
+        vsDomainRelMaintainer.refreshOffline(virtualServer);
     }
 
     @Override
-    public void deleteVirtualServer(Long vsId) throws Exception {
-        rVsSlbDao.deleteByVs(new RelVsSlbDo().setVsId(vsId));
-        rVsDomainDao.deleteAllByVs(new RelVsDomainDo().setVsId(vsId));
-        slbVirtualServerDao.deleteByPK(new SlbVirtualServerDo().setId(vsId));
+    public void updateStatus(List<VirtualServer> virtualServers) throws Exception {
+        RelVsStatusDo[] dos = new RelVsStatusDo[virtualServers.size()];
+        for (int i = 0; i < dos.length; i++) {
+            dos[i] = new RelVsStatusDo().setVsId(virtualServers.get(i).getId()).setOnlineVersion(virtualServers.get(i).getVersion());
+        }
+
+        VirtualServer[] array = virtualServers.toArray(new VirtualServer[virtualServers.size()]);
+        vsSlbRelMaintainer.refreshOnline(array);
+        vsDomainRelMaintainer.refreshOnline(array);
+
+        rVsStatusDao.updateOnlineVersionByVs(dos, RVsStatusEntity.UPDATESET_UPDATE_ONLINE_STATUS);
     }
 
     @Override
-    public void deleteVirtualServers(Long[] vsIds) throws Exception {
-        int size = vsIds.length;
-        RelVsSlbDo[] relSlbs = new RelVsSlbDo[size];
-        RelVsDomainDo[] relDomains = new RelVsDomainDo[size];
-        SlbVirtualServerDo[] vses = new SlbVirtualServerDo[size];
-        for (int i = 0; i < size; i++) {
-            relSlbs[i] = new RelVsSlbDo().setVsId(vsIds[i]);
-            relDomains[i] = new RelVsDomainDo().setVsId(vsIds[i]);
-            vses[i] = new SlbVirtualServerDo().setId(vsIds[i]);
-        }
-        rVsSlbDao.deleteByVs(relSlbs);
-        rVsDomainDao.deleteAllByVs(relDomains);
-        slbVirtualServerDao.deleteById(vses);
+    public void delete(Long vsId) throws Exception {
+        vsSlbRelMaintainer.clear(vsId);
+        vsDomainRelMaintainer.clear(vsId);
+        rVsStatusDao.deleteAllByVs(new RelVsStatusDo().setVsId(vsId));
+        slbVirtualServerDao.deleteById(new SlbVirtualServerDo().setId(vsId));
+        archiveVsDao.deleteByVs(new MetaVsArchiveDo().setVsId(vsId));
     }
 
-    @Override
-    public List<Long> port(VirtualServer[] vses) {
-        List<Long> fails = new ArrayList<>();
-        for (VirtualServer vs : vses) {
-            try {
-                mVsContentDao.insertOrUpdate(new MetaVsContentDo().setVsId(vs.getId()).setContent(ContentWriters.writeVirtualServerContent(vs)));
-                rVsSlbDao.insert(new RelVsSlbDo().setVsId(vs.getId()).setSlbId(vs.getSlbId()));
-                relSyncDomain(vs.getId(), vs.getDomains());
-            } catch (Exception ex) {
-                fails.add(vs.getId());
-            }
-        }
-        return fails;
+    private static SlbVirtualServerDo toSlbVirtualServerDo(VirtualServer e) {
+        return new SlbVirtualServerDo().setId(e.getId() == null ? 0L : e.getId()).setName(e.getName()).setPort(e.getPort()).setIsSsl(e.isSsl()).setVersion(e.getVersion());
     }
-
-    @Override
-    public void port(VirtualServer vs) throws Exception {
-        mVsContentDao.insertOrUpdate(new MetaVsContentDo().setVsId(vs.getId()).setContent(ContentWriters.writeVirtualServerContent(vs)));
-        RelVsSlbDo d = new RelVsSlbDo().setVsId(vs.getId()).setSlbId(vs.getSlbId());
-        rVsSlbDao.deleteByVs(d);
-        rVsSlbDao.insert(d);
-        relSyncDomain(vs.getId(), vs.getDomains());
-    }
-
-    private void relSyncDomain(Long vsId, List<Domain> domains) throws DalException {
-        // add/remove domains
-        List<RelVsDomainDo> originDomains = rVsDomainDao.findAllDomainsByVses(new Long[]{vsId}, RVsDomainEntity.READSET_FULL);
-        Map<String, RelVsDomainDo> uniqueCheck = Maps.uniqueIndex(
-                originDomains, new Function<RelVsDomainDo, String>() {
-                    @Override
-                    public String apply(RelVsDomainDo input) {
-                        return input.getDomain();
-                    }
-                });
-        for (Domain domain : domains) {
-            RelVsDomainDo originDomain = uniqueCheck.get(domain.getName());
-            if (originDomain != null) {
-                originDomains.remove(originDomain);
-                continue;
-            }
-            rVsDomainDao.insert(new RelVsDomainDo().setVsId(vsId).setDomain(domain.getName()));
-        }
-        for (RelVsDomainDo rel : originDomains) {
-            rVsDomainDao.deleteByVsAndDomain(rel);
-        }
-    }
-
 }

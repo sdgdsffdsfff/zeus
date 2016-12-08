@@ -9,19 +9,24 @@ import org.apache.commons.exec.DefaultExecutor;
 import org.apache.commons.exec.PumpStreamHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Component;
 
 import java.io.*;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 
+@Component("nginxOperator")
 public class NginxOperator {
     private static final Logger LOGGER = LoggerFactory.getLogger(NginxOperator.class);
 
     private static final String DEF_NGINX_CONF = "nginx.conf";
     private static final String CONF_SUFFIX = ".conf";
+    private static final String DEFAULT_CONF_DIR = "/opt/app/nginx/conf";
+    private static final String DEFAULT_BIN_DIR = "/opt/app/nginx/sbin";
     private String nginxConfDir;
     private String nginxBinDir;
-
 
 
     public NginxOperator(String nginxConfDir, String nginxBinDir){
@@ -30,10 +35,15 @@ public class NginxOperator {
     }
     public NginxOperator()
     {
-        this.nginxConfDir = null;
-        this.nginxBinDir = null;
+        this.nginxConfDir = DEFAULT_CONF_DIR;
+        this.nginxBinDir = DEFAULT_BIN_DIR;
     }
 
+    public NginxOperator init(String nginxConfDir, String nginxBinDir){
+        this.nginxConfDir = nginxConfDir;
+        this.nginxBinDir = nginxBinDir;
+        return this;
+    }
     public void writeNginxConf(String conf) throws IOException {
         doWriteConf(nginxConfDir, DEF_NGINX_CONF,conf);
     }
@@ -81,24 +91,22 @@ public class NginxOperator {
             throw e;
         }
     }
-    public NginxResponse cleanConf(List<Long> vsid) throws IOException{
+    public NginxResponse rollbackBackupConf()throws Exception{
         try {
-            List<String> confFileList = new ArrayList<>();
-            for (Long vs : vsid)
-            {
-                confFileList.add(vs+CONF_SUFFIX);
-            }
-            String cleanVhostCommand = " ls "+nginxConfDir+"/vhosts";
-            String cleanUpstreamCommand = " ls "+nginxConfDir+"/upstreams";
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd_HH:mm:ss");
+            String rollbackConfDir  = nginxConfDir + "/Rollbacks/" + sdf.format(new Date());
+            makeSurePathExist(rollbackConfDir);
+            String mvVhostCommand = " cp -r "+nginxConfDir+"/vhosts " + rollbackConfDir + "/ ";
+            String mvUpstreamCommand = " cp -r "+nginxConfDir+"/upstreams "+ rollbackConfDir + "/ ";
+            String mvNginxConfCommand = " cp "+nginxConfDir+"/nginx.conf " + rollbackConfDir + "/ ";
             ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
             ByteArrayOutputStream errorStream = new ByteArrayOutputStream();
-            CommandLine commandline = CommandLine.parse(cleanVhostCommand);
+            CommandLine commandline = CommandLine.parse(mvVhostCommand);
             DefaultExecutor exec = new DefaultExecutor();
             exec.setExitValues(null);
             PumpStreamHandler streamHandler = new PumpStreamHandler(outputStream,errorStream);
             exec.setStreamHandler(streamHandler);
 
-            //vhost ls command
             int exitVal = exec.execute(commandline);
             String out = outputStream.toString("UTF-8");
             String error = errorStream.toString("UTF-8");
@@ -107,70 +115,98 @@ public class NginxOperator {
             response.setErrMsg(error);
             response.setSucceed(0==exitVal);
 
-            //vhost rm command
-            if (response.getSucceed())
-            {
-                String[] lsObj = out.split("\n");
-                StringBuilder sb = new StringBuilder(128);
-                sb.append("rm ");
-                for (String rm : lsObj)
-                {
-                    if (!confFileList.contains(rm.trim()))
-                    {
-                        sb.append(nginxConfDir).append("/vhosts/").append(rm).append(" ");
-                    }
-                }
-                if (!sb.toString().trim().equals("rm")){
-                    commandline = CommandLine.parse(sb.toString());
-                    exitVal = exec.execute(commandline);
-                    out = outputStream.toString("UTF-8");
-                    error = errorStream.toString("UTF-8");
-                    response.setOutMsg(out);
-                    response.setErrMsg(error);
-                    response.setSucceed(0==exitVal);
-                }
+            LOGGER.info("Back Up rollback conf",response.toString());
+            if (!response.getSucceed()){
+                throw new Exception("Fail to backup rollback server conf. Response:"+response.toString());
             }
 
-            //upstream ls command
-            commandline = CommandLine.parse(cleanUpstreamCommand);
+            commandline = CommandLine.parse(mvUpstreamCommand);
             exitVal = exec.execute(commandline);
             out = outputStream.toString("UTF-8");
             error = errorStream.toString("UTF-8");
-            NginxResponse upstreamResponse = new NginxResponse();
-            upstreamResponse.setOutMsg(out);
-            upstreamResponse.setErrMsg(error);
-            upstreamResponse.setSucceed(0==exitVal);
-            //upstream rm command
-            if (upstreamResponse.getSucceed())
-            {
-                String[] lsObj = out.split("\n");
-                StringBuilder sb = new StringBuilder(128);
-                sb.append("rm ");
-                for (String rm : lsObj)
-                {
-                    if (!confFileList.contains(rm.trim()))
-                    {
-                        sb.append(nginxConfDir).append("/upstreams/").append(rm).append(" ");
-                    }
-                }
-                if (!sb.toString().trim().equals("rm")){
-                    commandline = CommandLine.parse(sb.toString());
-                    exitVal = exec.execute(commandline);
-                    out = outputStream.toString("UTF-8");
-                    error = errorStream.toString("UTF-8");
-                    upstreamResponse.setOutMsg(out);
-                    upstreamResponse.setErrMsg(error);
-                    upstreamResponse.setSucceed(0==exitVal);
-                }
+            response = new NginxResponse();
+            response.setOutMsg(out);
+            response.setErrMsg(error);
+            response.setSucceed(0==exitVal);
+
+            LOGGER.info("Back Up rollback conf",response.toString());
+            if (!response.getSucceed()){
+                throw new Exception("Fail to backup rollback upstream conf. Response:"+response.toString());
             }
-            LOGGER.info(response.toString());
-            LOGGER.info(upstreamResponse.toString());
+
+            commandline = CommandLine.parse(mvNginxConfCommand);
+            exitVal = exec.execute(commandline);
+            out = outputStream.toString("UTF-8");
+            error = errorStream.toString("UTF-8");
+            response = new NginxResponse();
+            response.setOutMsg(out);
+            response.setErrMsg(error);
+            response.setSucceed(0==exitVal);
+
+            LOGGER.info("Back Up rollback conf",response.toString());
+            if (!response.getSucceed()){
+                throw new Exception("Fail to backup rollback nginx.conf. Response:"+response.toString());
+            }
             return response;
         } catch (IOException e) {
+            throw new Exception("Fail to backup rollback conf",e);
+        }
+    }
+    public NginxResponse cleanConf(List<Long> vsid) throws IOException{
+        try {
+            NginxResponse response = new NginxResponse();
+            String msg = "";
+            List<String> confFileList = new ArrayList<>();
+            for (Long vs : vsid)
+            {
+                confFileList.add(vs+CONF_SUFFIX);
+            }
+            String vhostDir = nginxConfDir + "/vhosts";
+            String upstreamDir = nginxConfDir + "/upstreams";
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd_HH:mm:ss");
+            File vhostFile = new File(vhostDir);
+            File [] serverFiles = vhostFile.listFiles();
+            if (serverFiles != null){
+                msg = "Clean Vhost File:";
+                for (File file : serverFiles){
+                    if (file.getName().contains(".bak.")){
+                        continue;
+                    }
+                    if (!confFileList.contains(file.getName())){
+                        File renameTo = new File(file.getAbsolutePath()+".bak."+sdf.format(new Date()));
+                        file.renameTo(renameTo);
+                        msg += " " + file.getName();
+                    }
+                }
+            }
+
+            File upstreamFile = new File(upstreamDir);
+
+            File [] upstreamFiles = upstreamFile.listFiles();
+            if (upstreamFiles != null){
+                msg += "\nClean Upstream File:";
+                for (File file : upstreamFiles){
+                    if (file.getName().contains(".bak.")){
+                        continue;
+                    }
+                    if (!confFileList.contains(file.getName())){
+                        File renameTo = new File(file.getAbsolutePath()+".bak."+sdf.format(new Date()));
+                        file.renameTo(renameTo);
+                        msg += " " + file.getName();
+                    }
+                }
+            }
+
+            response.setSucceed(true);
+            response.setOutMsg(msg);
+            LOGGER.info("Clean Conf Response:"+response.toString());
+            return response;
+        } catch (Exception e) {
             LOGGER.error("Fail to clean conf",e);
             throw e;
         }
     }
+
     public NginxResponse reloadConf() throws IOException{
         try {
             String command = nginxBinDir + "/nginx -s reload";

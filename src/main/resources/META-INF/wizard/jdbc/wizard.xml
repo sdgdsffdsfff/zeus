@@ -50,7 +50,30 @@
          <table name="snap_server_group"/>
          <table name="r_vs_slb"/>
          <table name="task"/>
-         <table name="m_vs_content"/>
+         <table name="r_group_vs"/>
+         <table name="r_group_gs"/>
+         <table name="r_slb_slb_server"/>
+         <table name="certificate"/>
+         <table name="r_certificate_slb_server"/>
+         <table name="r_group_vg"/>
+         <table name="archive_vs"/>
+         <table name="conf_slb_virtual_server_active"/>
+         <table name="status_health_check"/>
+         <table name="global_job"/>
+         <table name="r_group_status"/>
+         <table name="r_slb_status"/>
+         <table name="r_vs_status"/>
+         <table name="conf_slb_version"/>
+         <table name="commit"/>
+         <table name="nginx_conf_slb"/>
+         <table name="group_history"/>
+         <table name="group_server_status"/>
+         <table name="app_info"/>
+         <table name="report_queue"/>
+         <table name="message_queue"/>
+         <table name="default_page_active"/>
+         <table name="default_page_file"/>
+         <table name="default_page_server_active"/>
       </group>
    </jdbc>
 </wizard>

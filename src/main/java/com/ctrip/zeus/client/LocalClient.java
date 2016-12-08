@@ -16,29 +16,32 @@ import java.io.IOException;
  */
 public class LocalClient {
     private static final String LOCALHOST = "http://127.0.0.1";
+
+    //TODO unify port get
     private static final DynamicIntProperty nginxDyupsPort = DynamicPropertyFactory.getInstance().getIntProperty("dyups.port", 8081);
     private static final DynamicIntProperty nginxStatusPort = DynamicPropertyFactory.getInstance().getIntProperty("slb.nginx.status-port", 10001);
-    private static final DynamicIntProperty upstreamStatusInterval = DynamicPropertyFactory.getInstance().getIntProperty("slb.upstream.status.interval", 1000);
+
+    private static final DynamicIntProperty nginxDyupsTimeout = DynamicPropertyFactory.getInstance().getIntProperty("nginx.dyups.read.timeout", 500);
 
     private static final LocalClient localClient = new LocalClient();
 
+    public static LocalClient getInstance() {
+        return localClient;
+    }
+
     private final NginxDyupsClient dyupsClient;
     private final NginxStatusClient statusClient;
+
     private UpstreamStatus upstreamStatus = null;
-    private Long upstreamStatusDate = 0L;
 
     public LocalClient() {
         dyupsClient = new NginxDyupsClient();
         statusClient = new NginxStatusClient();
     }
 
-    public LocalClient(String host) {
-        dyupsClient = new NginxDyupsClient(host + ":" + nginxDyupsPort.get());
+    protected LocalClient(String host) {
+        dyupsClient = new NginxDyupsClient(host + ":" + nginxDyupsPort.get(), nginxDyupsTimeout.get());
         statusClient = new NginxStatusClient(host + ":" + nginxStatusPort.get());
-    }
-
-    public static LocalClient getInstance() {
-        return localClient;
     }
 
     public synchronized NginxResponse dyups(String upsName, String upsCommands) throws IOException {
@@ -53,13 +56,8 @@ public class LocalClient {
     }
 
     public UpstreamStatus getUpstreamStatus() throws IOException {
-        Long now = System.currentTimeMillis();
-        if (now - upstreamStatusDate > upstreamStatusInterval.get() || upstreamStatus == null)
-        {
-            String result = statusClient.getTarget().path("/status.json").request().get(String.class);
-            upstreamStatus = DefaultJsonParser.parse(UpstreamStatus.class, result);
-            upstreamStatusDate = now;
-        }
+        String result = statusClient.getTarget().path("/status.json").request().get(String.class);
+        upstreamStatus = DefaultJsonParser.parse(UpstreamStatus.class, result);
         return upstreamStatus;
     }
 
@@ -73,11 +71,12 @@ public class LocalClient {
 
     private class NginxDyupsClient extends AbstractRestClient {
         public NginxDyupsClient() {
-            this(LOCALHOST + ":" + nginxDyupsPort.get());
+            this(LOCALHOST + ":" + nginxDyupsPort.get(), nginxDyupsTimeout.get());
+
         }
 
-        protected NginxDyupsClient(String url) {
-            super(url);
+        protected NginxDyupsClient(String url, int timeout) {
+            super(url, timeout);
         }
     }
 

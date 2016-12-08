@@ -3,19 +3,24 @@ package com.ctrip.zeus.server;
 import com.ctrip.zeus.auth.impl.IPAuthenticationFilter;
 import com.ctrip.zeus.restful.resource.SlbResourcePackage;
 import com.ctrip.zeus.server.config.SlbAdminResourceConfig;
+import com.ctrip.zeus.startup.SpringInitializationNotifier;
 import com.ctrip.zeus.util.AccessLogFilter;
 import com.netflix.config.DynamicBooleanProperty;
 import com.netflix.config.DynamicIntProperty;
 import com.netflix.config.DynamicPropertyFactory;
 import com.netflix.config.DynamicStringProperty;
 import org.apache.jasper.servlet.JspServlet;
+import org.eclipse.jetty.server.Connector;
 import org.eclipse.jetty.server.Server;
+import org.eclipse.jetty.server.ServerConnector;
+import org.eclipse.jetty.server.handler.StatisticsHandler;
 import org.eclipse.jetty.server.session.SessionHandler;
 import org.eclipse.jetty.servlet.DefaultServlet;
 import org.eclipse.jetty.servlet.FilterHolder;
 import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.eclipse.jetty.servlet.ServletHolder;
 import org.eclipse.jetty.servlets.GzipFilter;
+import org.eclipse.jetty.util.thread.QueuedThreadPool;
 import org.glassfish.jersey.server.ResourceConfig;
 import org.glassfish.jersey.servlet.ServletContainer;
 import org.jasig.cas.client.authentication.AuthenticationFilter;
@@ -55,6 +60,9 @@ public class SlbAdminServer extends AbstractServer {
         DynamicStringProperty casServerLoginUrl = DynamicPropertyFactory.getInstance().getStringProperty("server.sso.casServer.login.url", "");
         DynamicStringProperty casServerUrlPrefix = DynamicPropertyFactory.getInstance().getStringProperty("server.sso.casServer.url.prefix", "");
         DynamicStringProperty serverName = DynamicPropertyFactory.getInstance().getStringProperty("server.sso.server.name", "");
+        DynamicIntProperty sessionTimeout = DynamicPropertyFactory.getInstance().getIntProperty("server.session.timeout", 60 * 5);
+        DynamicIntProperty maxThreads = DynamicPropertyFactory.getInstance().getIntProperty("server.max.threads", 300);
+        DynamicIntProperty minThreads = DynamicPropertyFactory.getInstance().getIntProperty("server.min.threads", 50);
 
 
         //Config Jersey
@@ -64,7 +72,9 @@ public class SlbAdminServer extends AbstractServer {
         //Create and Config Jetty Request Handler
         ServletContextHandler handler = new ServletContextHandler();
         handler.setContextPath("/");
-        handler.setSessionHandler(new SessionHandler());
+        SessionHandler sessionHandler = new SessionHandler();
+        sessionHandler.getSessionManager().setMaxInactiveInterval(sessionTimeout.get());
+        handler.setSessionHandler(sessionHandler);
 
         //Add Default Servlet
         handler.setResourceBase(wwwBaseDir.get());
@@ -79,11 +89,15 @@ public class SlbAdminServer extends AbstractServer {
         handler.setInitParameter("contextConfigLocation", "classpath*:" + springContextFile.get()); //+ ",classpath*:spring-context-security.xml");
         ContextLoaderListener sprintContextListener = new ContextLoaderListener();
         handler.addEventListener(sprintContextListener);
+        handler.addEventListener(new SpringInitializationNotifier());
 
         //Support Jersey
         ServletContainer jerseyServletContainer = new ServletContainer(config);
         ServletHolder jerseyServletHolder = new ServletHolder(jerseyServletContainer);
 
+        //Support CrossDomain
+        handler.addFilter(CrossDomainFilter.class, "/*", EnumSet.of(DispatcherType.REQUEST));
+        
         //Support GZip
         handler.addFilter(GzipFilter.class, "/*", EnumSet.of(DispatcherType.REQUEST))
                 .setInitParameter("mimeTypes", "application/json, application/xml,text/xml, text/html");
@@ -105,7 +119,7 @@ public class SlbAdminServer extends AbstractServer {
 
             handler.addFilter(HttpServletRequestWrapperFilter.class, "/*", EnumSet.of(DispatcherType.REQUEST));
         }
-
+        handler.addFilter(PreCheckFilter.class, "/*", EnumSet.of(DispatcherType.REQUEST));
         handler.addFilter(AccessLogFilter.class, "/*", EnumSet.of(DispatcherType.REQUEST, DispatcherType.FORWARD));
 
         //Config Servlet
@@ -117,9 +131,22 @@ public class SlbAdminServer extends AbstractServer {
         handler.addServlet(new ServletHolder(new ForwardServlet("/op.jsp")), "/op");
         handler.addServlet(new ServletHolder(new ForwardServlet("/status.jsp")), "/status");
 
+        // Set Statistics Handler for graceful shutdown handling
+        StatisticsHandler statsHandler = new StatisticsHandler();
+        statsHandler.setHandler(handler);
+
+        //Request Log
+        SlbRequestLogHandler requestLogHandler = new SlbRequestLogHandler();
+        requestLogHandler.setHandler(statsHandler);
+
         //Create Jetty Server
-        server = new Server(serverPort.get());
-        server.setHandler(handler);
+        QueuedThreadPool threadPool = new QueuedThreadPool(maxThreads.get(), minThreads.get());
+        server = new Server(threadPool);
+        ServerConnector connector=new ServerConnector(server);
+        connector.setPort(serverPort.get());
+        server.setConnectors(new Connector[]{connector});
+        server.setHandler(requestLogHandler);
+        server.setStopTimeout(30000L);
     }
 
 

@@ -1,6 +1,5 @@
 package com.ctrip.zeus.service.model;
 
-import com.ctrip.zeus.model.entity.GroupVirtualServer;
 import com.ctrip.zeus.model.entity.VirtualServer;
 
 import java.util.List;
@@ -12,25 +11,21 @@ public interface VirtualServerRepository {
 
     List<VirtualServer> listAll(Long[] vsIds) throws Exception;
 
-    VirtualServer getById(Long virtualServerId) throws Exception;
+    List<VirtualServer> listAll(IdVersion[] keys) throws Exception;
 
-    VirtualServer addVirtualServer(Long slbId, VirtualServer virtualServer) throws Exception;
+    VirtualServer getById(Long vsId) throws Exception;
 
-    void updateVirtualServer(VirtualServer virtualServer) throws Exception;
+    VirtualServer getByKey(IdVersion key) throws Exception;
 
-    void deleteVirtualServer(Long virtualServerId) throws Exception;
+    VirtualServer add(VirtualServer virtualServer) throws Exception;
 
-    void batchDeleteVirtualServers(Long slbId) throws Exception;
+    VirtualServer update(VirtualServer virtualServer) throws Exception;
 
-    List<GroupVirtualServer> listGroupVsByGroups(Long[] groupIds) throws Exception;
+    void delete(Long virtualServerId) throws Exception;
 
-    void batchDeleteGroupVirtualServers(Long groupId) throws Exception;
+    void installCertificate(VirtualServer virtualServer) throws Exception;
 
-    void updateGroupVirtualServers(Long groupId, List<GroupVirtualServer> groupVirtualServers) throws Exception;
+    void updateStatus(IdVersion[] vses, SelectionMode state) throws Exception;
 
-    @Deprecated
-    List<Long> portVirtualServerRel() throws Exception;
-
-    @Deprecated
-    void portVirtualServerRel(Long vsId) throws Exception;
+    void updateStatus(IdVersion[] vses) throws Exception;
 }

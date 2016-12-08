@@ -1,22 +1,24 @@
 package com.ctrip.zeus.service.model.impl;
 
-import com.ctrip.zeus.dal.core.*;
+import com.ctrip.zeus.dal.core.ArchiveVsDao;
+import com.ctrip.zeus.dal.core.ArchiveVsEntity;
+import com.ctrip.zeus.dal.core.MetaVsArchiveDo;
 import com.ctrip.zeus.exceptions.ValidationException;
 import com.ctrip.zeus.model.entity.Domain;
-import com.ctrip.zeus.model.entity.GroupVirtualServer;
 import com.ctrip.zeus.model.entity.VirtualServer;
+import com.ctrip.zeus.service.model.SelectionMode;
 import com.ctrip.zeus.service.model.VirtualServerRepository;
-import com.ctrip.zeus.service.model.handler.GroupValidator;
+import com.ctrip.zeus.service.model.handler.SlbQuery;
 import com.ctrip.zeus.service.model.handler.SlbValidator;
+import com.ctrip.zeus.service.model.handler.VirtualServerValidator;
 import com.ctrip.zeus.service.model.handler.impl.ContentReaders;
 import com.ctrip.zeus.service.model.handler.impl.VirtualServerEntityManager;
-import com.ctrip.zeus.service.query.ArchiveCriteriaQuery;
+import com.ctrip.zeus.service.nginx.CertificateService;
+import com.ctrip.zeus.service.model.IdVersion;
 import com.ctrip.zeus.service.query.VirtualServerCriteriaQuery;
-import com.ctrip.zeus.support.C;
-import com.google.common.base.Function;
-import com.google.common.collect.Maps;
+import com.google.common.base.Joiner;
 import org.springframework.stereotype.Component;
-import org.unidal.dal.jdbc.DalException;
+import sun.reflect.generics.reflectiveObjects.NotImplementedException;
 
 import javax.annotation.Resource;
 import java.util.*;
@@ -31,171 +33,202 @@ public class VirtualServerRepositoryImpl implements VirtualServerRepository {
     @Resource
     private VirtualServerEntityManager virtualServerEntityManager;
     @Resource
-    private MVsContentDao mVsContentDao;
-    @Resource
-    private GroupSlbDao groupSlbDao;
-    @Resource
-    private SlbVirtualServerDao slbVirtualServerDao;
-    @Resource
-    private SlbDomainDao slbDomainDao;
-    @Resource
-    private SlbDao slbDao;
+    private VirtualServerValidator virtualServerModelValidator;
     @Resource
     private SlbValidator slbModelValidator;
     @Resource
-    private GroupValidator groupModelValidator;
-
-    @Override
-    public List<GroupVirtualServer> listGroupVsByGroups(Long[] groupIds) throws Exception {
-        return batchFetch(groupSlbDao.findAllByGroups(groupIds, GroupSlbEntity.READSET_FULL));
-    }
+    private SlbQuery slbQuery;
+    @Resource
+    private CertificateService certificateService;
+    @Resource
+    private ArchiveVsDao archiveVsDao;
 
     @Override
     public List<VirtualServer> listAll(Long[] vsIds) throws Exception {
+        Set<IdVersion> keys = virtualServerCriteriaQuery.queryByIdsAndMode(vsIds, SelectionMode.OFFLINE_FIRST);
+        return listAll(keys.toArray(new IdVersion[keys.size()]));
+    }
+
+    @Override
+    public List<VirtualServer> listAll(IdVersion[] keys) throws Exception {
         List<VirtualServer> result = new ArrayList<>();
-        for (MetaVsContentDo metaVsContentDo : mVsContentDao.findAllByIds(vsIds, MVsContentEntity.READSET_FULL)) {
-            result.add(ContentReaders.readVirtualServerContent(metaVsContentDo.getContent()));
+        Integer[] hashes = new Integer[keys.length];
+        String[] values = new String[keys.length];
+        for (int i = 0; i < hashes.length; i++) {
+            hashes[i] = keys[i].hashCode();
+            values[i] = keys[i].toString();
+        }
+        for (MetaVsArchiveDo d : archiveVsDao.findAllByIdVersion(hashes, values, ArchiveVsEntity.READSET_FULL)) {
+            VirtualServer vs = ContentReaders.readVirtualServerContent(d.getContent());
+            vs.setCreatedTime(d.getDateTimeLastChange());
+            result.add(vs);
         }
         return result;
     }
 
     @Override
-    public VirtualServer getById(Long virtualServerId) throws Exception {
-        MetaVsContentDo d = mVsContentDao.findById(virtualServerId, MVsContentEntity.READSET_FULL);
-        return d == null ? null : ContentReaders.readVirtualServerContent(d.getContent());
+    public VirtualServer getById(Long vsId) throws Exception {
+        IdVersion[] key = virtualServerCriteriaQuery.queryByIdAndMode(vsId, SelectionMode.OFFLINE_FIRST);
+        return getByKey(key[0]);
     }
 
     @Override
-    public VirtualServer addVirtualServer(Long slbId, VirtualServer virtualServer) throws Exception {
-        virtualServer.setSlbId(slbId);
+    public VirtualServer getByKey(IdVersion key) throws Exception {
+        MetaVsArchiveDo d = archiveVsDao.findByVsAndVersion(key.getId(), key.getVersion(), ArchiveVsEntity.READSET_FULL);
+        if (d == null) {
+            return null;
+        }
 
-        Set<Long> checkIds = virtualServerCriteriaQuery.queryBySlbId(virtualServer.getSlbId());
-        List<VirtualServer> check = listAll(checkIds.toArray(new Long[checkIds.size()]));
+        VirtualServer vs = ContentReaders.readVirtualServerContent(d.getContent());
+        vs.setCreatedTime(d.getDateTimeLastChange());
+        return vs;
+    }
+
+    @Override
+    public VirtualServer add(VirtualServer virtualServer) throws Exception {
+        virtualServer.setId(0L);
+        //TODO render for deprecated field
+        if (virtualServer.getSlbId() != null) {
+            if (!virtualServer.getSlbIds().contains(virtualServer.getSlbId())) {
+                virtualServer.getSlbIds().add(virtualServer.getSlbId());
+            }
+            virtualServer.setSlbId(null);
+        }
+
+        virtualServerModelValidator.validate(virtualServer);
+
+        Set<Long> uniq = new HashSet<>(virtualServer.getSlbIds());
+        for (Long slbId : uniq) {
+            if (!slbModelValidator.exists(slbId)) {
+                throw new ValidationException("Slb with id " + slbId + "does not exits.");
+            }
+        }
+
+        String[] domains = new String[virtualServer.getDomains().size()];
+        for (int i = 0; i < virtualServer.getDomains().size(); i++) {
+            domains[i] = virtualServer.getDomains().get(i).getName();
+        }
+
+        Set<IdVersion> keys = virtualServerCriteriaQuery.queryByDomains(domains);
+        List<VirtualServer> check = listAll(keys.toArray(new IdVersion[keys.size()]));
+        Iterator<VirtualServer> iter = check.iterator();
+        while (iter.hasNext()) {
+            VirtualServer tmp = iter.next();
+            boolean retained = false;
+            for (Long slbId : tmp.getSlbIds()) {
+                retained = uniq.contains(slbId);
+                if (retained) break;
+            }
+            if (!retained) iter.remove();
+        }
         check.add(virtualServer);
-        slbModelValidator.validateVirtualServer(check.toArray(new VirtualServer[check.size()]));
-        virtualServerEntityManager.addVirtualServer(virtualServer);
+
+        virtualServerModelValidator.unite(check);
+        virtualServerEntityManager.add(virtualServer);
+
+        if (virtualServer.isSsl()) {
+            installCertificate(virtualServer);
+        }
         return virtualServer;
     }
 
     @Override
-    public void updateVirtualServer(VirtualServer virtualServer) throws Exception {
-        if (virtualServer.getId() == null || virtualServer.getId().longValue() <= 0L)
-            throw new ValidationException("Invalid virtual server id.");
-        Set<Long> checkIds = virtualServerCriteriaQuery.queryBySlbId(virtualServer.getSlbId());
-        Map<Long, VirtualServer> check = new HashMap<>();
-        for (VirtualServer vs : listAll(checkIds.toArray(new Long[checkIds.size()]))) {
-            check.put(vs.getId(), vs);
+    public VirtualServer update(VirtualServer virtualServer) throws Exception {
+        if (!virtualServerModelValidator.exists(virtualServer.getId())) {
+            throw new ValidationException("Virtual server with id " + virtualServer.getId() + " does not exist.");
         }
-        if (!check.keySet().contains(virtualServer.getId()))
-            throw new ValidationException("Virtual server doesn't exist, please new one first.");
-        check.put(virtualServer.getId(), virtualServer);
-        slbModelValidator.validateVirtualServer(check.values().toArray(new VirtualServer[check.size()]));
-        virtualServerEntityManager.updateVirtualServer(virtualServer);
+        //TODO render for deprecated field
+        if (virtualServer.getSlbId() != null) {
+            if (!virtualServer.getSlbIds().contains(virtualServer.getSlbId())) {
+                virtualServer.getSlbIds().add(virtualServer.getSlbId());
+            }
+            virtualServer.setSlbId(null);
+        }
+
+        virtualServerModelValidator.validate(virtualServer);
+
+        Set<Long> uniq = new HashSet<>(virtualServer.getSlbIds());
+        for (Long slbId : uniq) {
+            if (!slbModelValidator.exists(slbId)) {
+                throw new ValidationException("Slb with id " + slbId + "does not exits.");
+            }
+        }
+
+        String[] domains = new String[virtualServer.getDomains().size()];
+        for (int i = 0; i < virtualServer.getDomains().size(); i++) {
+            domains[i] = virtualServer.getDomains().get(i).getName();
+        }
+
+        Set<IdVersion> keys = virtualServerCriteriaQuery.queryByDomains(domains);
+        List<VirtualServer> check = listAll(keys.toArray(new IdVersion[keys.size()]));
+        Iterator<VirtualServer> iter = check.iterator();
+        while (iter.hasNext()) {
+            VirtualServer tmp = iter.next();
+            if (tmp.getId().equals(virtualServer.getId())) {
+                iter.remove();
+                continue;
+            }
+
+            boolean retained = false;
+            for (Long slbId : tmp.getSlbIds()) {
+                retained = uniq.contains(slbId);
+                if (retained) break;
+            }
+            if (!retained) iter.remove();
+        }
+        check.add(virtualServer);
+
+        virtualServerModelValidator.unite(check);
+        virtualServerEntityManager.update(virtualServer);
+
+        if (virtualServer.isSsl()) {
+            installCertificate(virtualServer);
+        }
+        return virtualServer;
     }
 
     @Override
-    public void deleteVirtualServer(Long virtualServerId) throws Exception {
-        slbModelValidator.checkVirtualServerDependencies(new VirtualServer[]{getById(virtualServerId)});
-        virtualServerEntityManager.deleteVirtualServer(virtualServerId);
+    public void delete(Long virtualServerId) throws Exception {
+        virtualServerModelValidator.removable(virtualServerId);
+        virtualServerEntityManager.delete(virtualServerId);
     }
 
     @Override
-    public void batchDeleteVirtualServers(Long slbId) throws Exception {
-        //TODO validation?
-        Set<Long> vsIds = virtualServerCriteriaQuery.queryBySlbId(slbId);
-        virtualServerEntityManager.deleteVirtualServers(vsIds.toArray(new Long[vsIds.size()]));
+    public void installCertificate(VirtualServer virtualServer) throws Exception {
+        List<String> ips = new ArrayList<>();
+        for (Long slbId : virtualServer.getSlbIds()) {
+            ips.addAll(slbQuery.getSlbIps(slbId));
+        }
+        List<Domain> vsDomains = virtualServer.getDomains();
+        String[] domains = new String[vsDomains.size()];
+        for (int i = 0; i < domains.length; i++) {
+            domains[i] = vsDomains.get(i).getName();
+        }
+        String dd = Joiner.on("|").join(domains);
+        Long certId = certificateService.getCertificateOnBoard(dd);
+        certificateService.install(virtualServer.getId(), ips, certId, true);
     }
 
     @Override
-    public void batchDeleteGroupVirtualServers(Long groupId) throws Exception {
-        groupSlbDao.deleteByGroup(new GroupSlbDo().setGroupId(groupId));
-    }
-
-    @Override
-    public void updateGroupVirtualServers(Long groupId, List<GroupVirtualServer> groupVirtualServers) throws Exception {
-        groupModelValidator.validateGroupVirtualServers(groupId, groupVirtualServers);
-        List<GroupSlbDo> originServers = groupSlbDao.findAllByGroup(groupId, GroupSlbEntity.READSET_FULL);
-        Map<Long, GroupSlbDo> uniqueCheck = Maps.uniqueIndex(
-                originServers, new Function<GroupSlbDo, Long>() {
-                    @Override
-                    public Long apply(GroupSlbDo input) {
-                        return input.getSlbVirtualServerId();
+    public void updateStatus(IdVersion[] vses, SelectionMode state) throws Exception {
+        switch (state) {
+            case ONLINE_EXCLUSIVE:
+                List<VirtualServer> result = new ArrayList<>();
+                for (int i = 0; i < vses.length; i++) {
+                    if (vses[i].getVersion() == 0) {
+                        result.add(new VirtualServer().setId(vses[i].getId()).setVersion(vses[i].getVersion()));
                     }
-                });
-        for (GroupVirtualServer groupVirtualServer : groupVirtualServers) {
-            GroupSlbDo originServer = uniqueCheck.get(groupVirtualServer.getVirtualServer().getId());
-            if (originServer != null)
-                originServers.remove(originServer);
-            SlbVirtualServerDo d = slbVirtualServerDao.findByPK(groupVirtualServer.getVirtualServer().getId(), SlbVirtualServerEntity.READSET_FULL);
-            if (d == null)
-                throw new ValidationException("Virtual server with id " + groupVirtualServer.getVirtualServer().getId() + " cannot be found.");
-            SlbDo slb = slbDao.findById(d.getSlbId(), SlbEntity.READSET_FULL);
-            if (slb == null)
-                throw new ValidationException("Cannot find the corresponding slb from virtual server with id " + d.getId() + ".");
-            groupVirtualServer.getVirtualServer().setSlbId(slb.getId());
-            groupSlbDao.insertOrUpdate(toGroupSlbDo(groupId, groupVirtualServer));
-        }
-        for (GroupSlbDo d : originServers) {
-            groupSlbDao.deleteByPK(d);
+                }
+                result.addAll(listAll(vses));
+                virtualServerEntityManager.updateStatus(result);
+                return;
+            default:
+                throw new NotImplementedException();
         }
     }
 
     @Override
-    public List<Long> portVirtualServerRel() throws Exception {
-        List<SlbVirtualServerDo> l = slbVirtualServerDao.findAll(SlbVirtualServerEntity.READSET_FULL);
-        VirtualServer[] vses = new VirtualServer[l.size()];
-        for (int i = 0; i < l.size(); i++) {
-            vses[i] = createVirtualServer(l.get(i));
-        }
-        return virtualServerEntityManager.port(vses);
-    }
-
-    @Override
-    public void portVirtualServerRel(Long vsId) throws Exception {
-        SlbVirtualServerDo d = slbVirtualServerDao.findByPK(vsId, SlbVirtualServerEntity.READSET_FULL);
-        VirtualServer vs = createVirtualServer(d);
-        virtualServerEntityManager.port(vs);
-    }
-
-    private List<GroupVirtualServer> batchFetch(List<GroupSlbDo> list) throws Exception {
-        List<GroupVirtualServer> result = new ArrayList<>();
-        for (GroupSlbDo groupSlbDo : list) {
-            GroupVirtualServer gvs = toGroupVirtualServer(groupSlbDo);
-            result.add(gvs);
-            gvs.setVirtualServer(getById(groupSlbDo.getSlbVirtualServerId()));
-        }
-        return result;
-    }
-
-    private VirtualServer createVirtualServer(SlbVirtualServerDo d) throws DalException {
-        VirtualServer vs = C.toVirtualServer(d);
-        querySlbDomains(d.getId(), vs);
-        return vs;
-    }
-
-
-    private void querySlbDomains(Long slbVirtualServerId, VirtualServer virtualServer) throws DalException {
-        List<SlbDomainDo> list = slbDomainDao.findAllBySlbVirtualServer(slbVirtualServerId, SlbDomainEntity.READSET_FULL);
-        for (SlbDomainDo d : list) {
-            virtualServer.addDomain(new Domain().setName(d.getName()));
-        }
-    }
-
-    private static GroupVirtualServer toGroupVirtualServer(GroupSlbDo d) {
-        return new GroupVirtualServer()
-                .setPath(d.getPath())
-                .setRewrite(d.getRewrite())
-                .setPriority(d.getPriority());
-    }
-
-    private static GroupSlbDo toGroupSlbDo(Long groupId, GroupVirtualServer groupVirtualServer) {
-        VirtualServer vs = groupVirtualServer.getVirtualServer();
-        return new GroupSlbDo()
-                .setGroupId(groupId)
-                .setSlbId(vs.getSlbId())
-                .setSlbVirtualServerId(vs.getId())
-                .setPath(groupVirtualServer.getPath())
-                .setRewrite(groupVirtualServer.getRewrite())
-                .setPriority(groupVirtualServer.getPriority() == null ? 1000 : groupVirtualServer.getPriority());
+    public void updateStatus(IdVersion[] vses) throws Exception {
+        updateStatus(vses, SelectionMode.ONLINE_EXCLUSIVE);
     }
 }

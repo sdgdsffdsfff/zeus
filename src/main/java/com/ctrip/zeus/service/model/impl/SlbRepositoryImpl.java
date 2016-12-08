@@ -1,21 +1,18 @@
 package com.ctrip.zeus.service.model.impl;
 
-import com.ctrip.zeus.dal.core.NginxServerDao;
-import com.ctrip.zeus.dal.core.NginxServerDo;
-import com.ctrip.zeus.exceptions.ValidationException;
+import com.ctrip.zeus.dal.core.*;
 import com.ctrip.zeus.model.entity.Slb;
 import com.ctrip.zeus.model.entity.SlbServer;
-import com.ctrip.zeus.model.entity.VirtualServer;
-import com.ctrip.zeus.service.model.ArchiveService;
-import com.ctrip.zeus.service.model.GroupMemberRepository;
-import com.ctrip.zeus.service.model.VirtualServerRepository;
-import com.ctrip.zeus.service.model.SlbRepository;
+import com.ctrip.zeus.service.model.*;
 import com.ctrip.zeus.service.model.handler.SlbQuery;
 import com.ctrip.zeus.service.model.handler.SlbSync;
 import com.ctrip.zeus.service.model.handler.SlbValidator;
+import com.ctrip.zeus.service.model.IdVersion;
+import com.ctrip.zeus.service.model.handler.impl.ContentReaders;
+import com.ctrip.zeus.service.nginx.CertificateService;
 import com.ctrip.zeus.service.query.SlbCriteriaQuery;
-import com.ctrip.zeus.service.query.VirtualServerCriteriaQuery;
 import org.springframework.stereotype.Repository;
+import sun.reflect.generics.reflectiveObjects.NotImplementedException;
 
 import javax.annotation.Resource;
 import java.util.*;
@@ -29,136 +26,134 @@ public class SlbRepositoryImpl implements SlbRepository {
     @Resource
     private NginxServerDao nginxServerDao;
     @Resource
-    private SlbSync slbSync;
-    @Resource
-    private SlbQuery slbQuery;
+    private SlbSync slbEntityManager;
     @Resource
     private SlbCriteriaQuery slbCriteriaQuery;
     @Resource
-    private VirtualServerRepository virtualServerRepository;
-    @Resource
-    private VirtualServerCriteriaQuery virtualServerCriteriaQuery;
-    @Resource
-    private GroupMemberRepository groupMemberRepository;
-    @Resource
-    private ArchiveService archiveService;
+    private SlbQuery slbQuery;
     @Resource
     private SlbValidator slbModelValidator;
+    @Resource
+    private AutoFiller autoFiller;
+    @Resource
+    private CertificateService certificateService;
+    @Resource
+    private ArchiveSlbDao archiveSlbDao;
 
     @Override
-    public List<Slb> list() throws Exception {
-        Set<Long> slbIds = slbCriteriaQuery.queryAll();
-        return archiveService.getLatestSlbs(slbIds.toArray(new Long[slbIds.size()]));
+    public List<Slb> list(Long[] slbIds) throws Exception {
+        Set<IdVersion> keys = slbCriteriaQuery.queryByIdsAndMode(slbIds, SelectionMode.OFFLINE_FIRST);
+        return list(keys.toArray(new IdVersion[keys.size()]));
+    }
+
+    @Override
+    public List<Slb> list(IdVersion[] keys) throws Exception {
+        Long[] slbIds = new Long[keys.length];
+        Integer[] hashes = new Integer[keys.length];
+        String[] values = new String[keys.length];
+        for (int i = 0; i < hashes.length; i++) {
+            hashes[i] = keys[i].hashCode();
+            values[i] = keys[i].toString();
+            slbIds[i] = keys[i].getId();
+        }
+
+        List<Slb> result = new ArrayList<>();
+        for (ArchiveSlbDo d : archiveSlbDao.findAllByIdVersion(hashes, values, ArchiveSlbEntity.READSET_FULL)) {
+            Slb slb = ContentReaders.readSlbContent(d.getContent());
+            slb.setCreatedTime(d.getDataChangeLastTime());
+            result.add(slb);
+        }
+
+        return result;
     }
 
     @Override
     public Slb getById(Long slbId) throws Exception {
-        return archiveService.getLatestSlb(slbId);
+        IdVersion[] key = slbCriteriaQuery.queryByIdAndMode(slbId, SelectionMode.OFFLINE_FIRST);
+        if (key.length == 0)
+            return null;
+        return getByKey(key[0]);
     }
 
     @Override
-    public Slb get(String slbName) throws Exception {
-        return getById(slbCriteriaQuery.queryByName(slbName));
-    }
+    public Slb getByKey(IdVersion key) throws Exception {
+        ArchiveSlbDo d = archiveSlbDao.findBySlbAndVersion(key.getId(), key.getVersion(), ArchiveSlbEntity.READSET_FULL);
+        if (d == null) return null;
 
-    @Override
-    public Slb getBySlbServer(String slbServerIp) throws Exception {
-        return getById(slbCriteriaQuery.queryBySlbServer(slbServerIp));
-    }
+        Slb result = ContentReaders.readSlbContent(d.getContent());
+        result.setCreatedTime(d.getDataChangeLastTime());
 
-    @Override
-    public Slb getByVirtualServer(Long virtualServerId) throws Exception {
-        VirtualServer vs = virtualServerRepository.getById(virtualServerId);
-        return getById(vs.getSlbId());
-    }
-
-    @Override
-    public List<Slb> listByGroupServer(String groupServerIp) throws Exception {
-        if (groupServerIp == null)
-            throw new ValidationException("group server ip must not be empty.");
-        Long[] groupIds = groupMemberRepository.findGroupsByGroupServerIp(groupServerIp);
-        if (groupIds.length == 0)
-            return new ArrayList<>();
-        return listByGroups(groupIds);
-    }
-
-    @Override
-    public List<Slb> listByGroups(Long[] groupIds) throws Exception {
-        Set<Long> slbIds = slbCriteriaQuery.queryByGroups(groupIds);
-        return batchGet(slbIds.toArray(new Long[slbIds.size()]));
+        return result;
     }
 
     @Override
     public Slb add(Slb slb) throws Exception {
         slbModelValidator.validate(slb);
-        slbModelValidator.validateVirtualServer(slb.getVirtualServers().toArray(
-                new VirtualServer[slb.getVirtualServers().size()]));
-        Long slbId = slbSync.add(slb);
-        slb.setId(slbId);
-        addVs(slb);
-        Slb result = archive(slbId);
+        autoFiller.autofill(slb);
+        slbEntityManager.add(slb);
 
-        for (SlbServer slbServer : result.getSlbServers()) {
-            nginxServerDao.insert(new NginxServerDo()
-                    .setIp(slbServer.getIp())
-                    .setSlbId(result.getId())
-                    .setVersion(0)
-                    .setCreatedTime(new Date()));
-        }
-        return result;
-    }
-
-    @Override
-    public Slb update(Slb slb) throws Exception {
-        slbModelValidator.validate(slb);
-        Long slbId = slbSync.update(slb);
-        Slb result = archive(slbId);
-
-        for (SlbServer slbServer : result.getSlbServers()) {
+        for (SlbServer slbServer : slb.getSlbServers()) {
             nginxServerDao.insert(new NginxServerDo()
                     .setIp(slbServer.getIp())
                     .setSlbId(slb.getId())
                     .setVersion(0)
                     .setCreatedTime(new Date()));
         }
-        return result;
+        return slb;
+    }
+
+    @Override
+    public Slb update(Slb slb) throws Exception {
+        slbModelValidator.validate(slb);
+        autoFiller.autofill(slb);
+
+        Set<String> checkList = new HashSet<>();
+        for (SlbServer ss : slb.getSlbServers()) {
+            checkList.add(ss.getIp());
+        }
+        for (String ss : slbQuery.getSlbIps(slb.getId())) {
+            checkList.remove(ss);
+        }
+
+        slbEntityManager.update(slb);
+        certificateService.install(slb.getId(), new ArrayList<>(checkList), false);
+
+        for (SlbServer slbServer : slb.getSlbServers()) {
+            nginxServerDao.insert(new NginxServerDo()
+                    .setIp(slbServer.getIp())
+                    .setSlbId(slb.getId())
+                    .setVersion(0)
+                    .setCreatedTime(new Date()));
+        }
+        return slb;
     }
 
     @Override
     public int delete(Long slbId) throws Exception {
         slbModelValidator.removable(slbId);
-        removeVsBySlb(slbId);
-        int count = slbSync.delete(slbId);
-        return count;
+        return slbEntityManager.delete(slbId);
     }
 
     @Override
-    public Slb updateVersion(Long slbId) throws Exception {
-        slbSync.updateVersion(slbId);
-        return archive(slbId);
-    }
-
-    private Slb archive(Long slbId) throws Exception {
-        Slb slb = slbQuery.getById(slbId);
-        Set<Long> vsIds = virtualServerCriteriaQuery.queryBySlbId(slb.getId());
-        for (VirtualServer virtualServer : virtualServerRepository.listAll(vsIds.toArray(new Long[vsIds.size()]))) {
-            slb.addVirtualServer(virtualServer);
-        }
-        archiveService.archiveSlb(slb);
-        return slb;
-    }
-
-    private List<Slb> batchGet(Long[] slbIds) throws Exception {
-        return archiveService.getLatestSlbs(slbIds);
-    }
-
-    private void addVs(Slb slb) throws Exception {
-        for (VirtualServer virtualServer : slb.getVirtualServers()) {
-            virtualServerRepository.addVirtualServer(slb.getId(), virtualServer);
+    public void updateStatus(IdVersion[] slbs, SelectionMode state) throws Exception {
+        switch (state) {
+            case ONLINE_EXCLUSIVE:
+                List<Slb> result = new ArrayList<>();
+                for (int i = 0; i < slbs.length; i++) {
+                    if (slbs[i].getVersion() == 0) {
+                        result.add(new Slb().setId(slbs[i].getId()).setVersion(slbs[i].getVersion()));
+                    }
+                }
+                result.addAll(list(slbs));
+                slbEntityManager.updateStatus(result);
+                return;
+            default:
+                throw new NotImplementedException();
         }
     }
 
-    private void removeVsBySlb(Long slbId) throws Exception {
-        virtualServerRepository.batchDeleteVirtualServers(slbId);
+    @Override
+    public void updateStatus(IdVersion[] slbs) throws Exception {
+        updateStatus(slbs, SelectionMode.ONLINE_EXCLUSIVE);
     }
 }

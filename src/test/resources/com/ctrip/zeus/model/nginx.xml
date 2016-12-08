@@ -4,7 +4,7 @@
             <total>2</total>
             <generation>213</generation>
             <server>
-                <s>
+                <item>
                     <index>0</index>
                     <upstream>aa</upstream>
                     <name>10.2.24.107:80</name>
@@ -13,8 +13,8 @@
                     <fall>0</fall>
                     <type>http</type>
                     <port>0</port>
-                </s>
-                <s>
+                </item>
+                <item>
                     <index>0</index>
                     <upstream>aa</upstream>
                     <name>10.2.24.107:80</name>
@@ -23,7 +23,7 @@
                     <fall>0</fall>
                     <type>http</type>
                     <port>0</port>
-                </s>
+                </item>
             </server>
         </servers>
     </upstream-status>
@@ -100,4 +100,27 @@
         <server-conf>server-conf</server-conf>
         <upstream-conf>upstream-conf</upstream-conf>
     </virtual-server-conf-response>
+    <vs-conf-data>
+        <upstream-conf>upstream</upstream-conf>
+        <vhost-conf>vhost</vhost-conf>
+    </vs-conf-data>
+
+    <nginx-conf-entry>
+        <vhosts>
+            <files>
+                <conf-file/>
+                <conf-file/>
+            </files>
+        </vhosts>
+        <upstreams>
+            <files>
+                <conf-file/>
+                <conf-file/>
+            </files>
+        </upstreams>
+    </nginx-conf-entry>
+    <conf-file>
+        <name>1_2</name>
+        <content>abc</content>
+    </conf-file>
 </nginx>

@@ -4,7 +4,12 @@
     <entity-ref name="virtual-server" />
     <entity-ref name="slb" />
     <entity-ref name="slb-list" />
+    <entity-ref name="slb-release-info" />
+    <entity-ref name="slb-release-info-list" />
+    <entity-ref name="server-war-info" />
     <entity-ref name="virtual-server-list" />
+    <entity-ref name="group-vs-bound-list" />
+    <entity-ref name="group-vs-bound" />
     <entity-ref name="group-virtual-server" />
     <entity-ref name="group-server" />
     <entity-ref name="group-server-list" />
@@ -23,8 +28,11 @@
     <attribute name="name" value-type="String" />
     <attribute name="id" value-type="long" />
     <attribute name="ssl" value-type="boolean" />
+    <attribute name="version" value-type="int" />
+    <element name="value" value-type="long" type="list" names="slb-ids" xml-indent="true" />
     <element name="slb-id" value-type="long" />
     <element name="port" value-type="String" />
+    <element name="created-time" value-type="Date" format="yyyy-MM-dd HH:mm:ss" />
     <entity-ref name="domain" type="list" names="domains" xml-indent="true" />
   </entity>
   <entity name="domain">
@@ -38,9 +46,9 @@
     <element name="nginx-conf" value-type="String" />
     <element name="nginx-worker-processes" value-type="int" />
     <element name="status" value-type="String" />
+    <element name="created-time" value-type="Date" format="yyyy-MM-dd HH:mm:ss" />
     <entity-ref name="vip" type="list" names="vips" xml-indent="true" />
     <entity-ref name="slb-server" type="list" names="slb-servers" xml-indent="true" />
-    <entity-ref name="virtual-server" type="list" names="virtual-servers" xml-indent="true" />
   </entity>
   <entity name="vip">
     <attribute name="ip" value-type="String" />
@@ -54,14 +62,44 @@
     <element name="total" value-type="int" />
     <entity-ref name="slb" type="list" names="slbs" xml-indent="true" />
   </entity>
+  <entity name="slb-release-info">
+    <attribute name="id" value-type="long" />
+    <attribute name="name" value-type="String" />
+    <attribute name="version" value-type="long" />
+    <entity-ref name="slb-server-release-info" type="list" names="slb-servers-info" xml-indent="true" />
+  </entity>
+  <entity name="slb-server-release-info">
+    <attribute name="ip" value-type="String" />
+    <attribute name="host-name" value-type="String" />
+    <attribute name="version" value-type="long" />
+  </entity>
+  <entity name="slb-release-info-list">
+    <element name="total" value-type="int" />
+    <entity-ref name="slb-release-info" type="list" names="slbs-info" xml-indent="true" />
+  </entity>
+  <entity name="server-war-info">
+    <attribute name="commitId" value-type="String" />
+  </entity>
   <entity name="virtual-server-list">
     <element name="total" value-type="int" />
     <entity-ref name="virtual-server" type="list" names="virtual-servers" />
+  </entity>
+  <entity name="group-vs-bound-list">
+    <element name="group-id" value-type="long" />
+    <entity-ref name="group-vs-bound" type="list" names="bounds" xml-indent="true" />
+  </entity>
+  <entity name="group-vs-bound">
+    <element name="vs-id" value-type="long" />
+    <element name="priority" value-type="int" />
+    <element name="path" value-type="String" />
+    <element name="rewrite" value-type="String" />
+    <element name="redirect" value-type="String" />
   </entity>
   <entity name="group-virtual-server">
     <attribute name="priority" value-type="int" />
     <element name="path" value-type="String" />
     <element name="rewrite" value-type="String" />
+    <element name="redirect" value-type="String" />
     <entity-ref name="virtual-server" />
   </entity>
   <entity name="group-server">
@@ -74,6 +112,8 @@
   </entity>
   <entity name="group-server-list">
     <element name="groupId" value-type="long" />
+    <element name="version" value-type="int" />
+    <element name="total" value-type="int" />
     <entity-ref name="group-server" type="list" names="group-servers" xml-indent="true" />
   </entity>
   <entity name="group">
@@ -82,6 +122,8 @@
     <attribute name="app-id" value-type="String" />
     <attribute name="version" value-type="int" />
     <attribute name="ssl" value-type="boolean" />
+    <attribute name="virtual" value-type="boolean" />
+    <element name="created-time" value-type="Date" format="yyyy-MM-dd HH:mm:ss" />
     <entity-ref name="group-virtual-server" type="list" names="group-virtual-servers" xml-indent="true" />
     <entity-ref name="health-check" />
     <entity-ref name="load-balancing-method" />
@@ -91,6 +133,7 @@
     <attribute name="intervals" value-type="int" />
     <attribute name="fails" value-type="int" />
     <attribute name="passes" value-type="int" />
+    <attribute name="timeout" value-type="int" />
     <element name="uri" value-type="String" />
   </entity>
   <entity name="load-balancing-method">

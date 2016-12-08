@@ -1,23 +1,17 @@
 package com.ctrip.zeus.service.status.impl;
 
 import com.ctrip.zeus.dal.core.*;
-import com.ctrip.zeus.model.entity.Group;
-import com.ctrip.zeus.model.entity.GroupVirtualServer;
-import com.ctrip.zeus.service.activate.ActivateService;
-import com.ctrip.zeus.service.model.GroupRepository;
-import com.ctrip.zeus.service.model.SlbRepository;
-import com.ctrip.zeus.service.status.handler.StatusGroupServerService;
-import com.ctrip.zeus.service.status.handler.StatusServerService;
+import com.ctrip.zeus.service.status.StatusOffset;
 import com.ctrip.zeus.service.status.StatusService;
+import com.ctrip.zeus.status.entity.UpdateStatusItem;
+import com.netflix.config.DynamicBooleanProperty;
+import com.netflix.config.DynamicPropertyFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
-import java.util.ArrayList;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 /**
  * @author:xingchaowang
@@ -26,149 +20,140 @@ import java.util.Set;
 @Service("statusService")
 public class StatusServiceImpl implements StatusService {
     @Resource
-    private StatusServerService statusServerService;
+    private StatusGroupServerDao statusGroupServerDao;
     @Resource
-    private StatusGroupServerService statusGroupServerService;
+    private StatusServerDao statusServerDao;
     @Resource
-    private SlbRepository slbRepository;
+    private StatusOffset statusOffset;
     @Resource
-    private ActivateService activateService;
-    @Resource
-    private GroupRepository groupRepository;
+    private GroupServerStatusDao groupServerStatusDao;
+
+    private final int OFFSET_LENGTH = 5;
 
     private Logger logger = LoggerFactory.getLogger(StatusServiceImpl.class);
 
     @Override
     public Set<String> findAllDownServers() throws Exception {
-            List<StatusServerDo> allDownServerList = statusServerService.listAllDown();
-            Set<String> allDownIps = new HashSet<>();
-            for (StatusServerDo d : allDownServerList) {
-                allDownIps.add(d.getIp());
-            }
-
-            return allDownIps;
-
-    }
-
-    @Override
-    public Set<String> findAllDownGroupServersBySlbId(Long slbId) throws Exception {
-            Set<String> allDownAppServers = new HashSet<>();
-            List<StatusGroupServerDo> allDownAppServerList = statusGroupServerService.listAllDownBySlbId(slbId);
-            for (StatusGroupServerDo d : allDownAppServerList) {
-                allDownAppServers.add(d.getSlbId() + "_" + d.getSlbVirtualServerId() + "_" + d.getGroupId() + "_" + d.getIp());
-            }
-            return allDownAppServers;
-    }
-    @Override
-    public Set<String> findAllUpGroupServersBySlbId(Long slbId) throws Exception {
-        Set<String> allUpAppServers = new HashSet<>();
-        List<StatusGroupServerDo> allUpAppServerList = statusGroupServerService.listAllUpBySlbId(slbId);
-        for (StatusGroupServerDo d : allUpAppServerList) {
-            allUpAppServers.add(d.getSlbId() + "_" + d.getSlbVirtualServerId() + "_" + d.getGroupId() + "_" + d.getIp());
+        List<StatusServerDo> allDownServerList = statusServerDao.findAllByIsUp(false, StatusServerEntity.READSET_FULL);
+        Set<String> allDownIps = new HashSet<>();
+        for (StatusServerDo d : allDownServerList) {
+            allDownIps.add(d.getIp());
         }
-        return allUpAppServers;
+        return allDownIps;
+    }
+
+    /*
+    * group server is up while status is 0 .
+    * */
+    @Override
+    public Map<String, List<Boolean>> fetchGroupServerStatus(Long[] groupIds) throws Exception {
+        Map<String, List<Boolean>> result = new HashMap<>();
+        List<GroupServerStatusDo> groupServerStatusDos = groupServerStatusDao.findAllByGroupIds(groupIds, GroupServerStatusEntity.READSET_FULL);
+        int tmp = 1;
+        for (GroupServerStatusDo s : groupServerStatusDos) {
+            int tmpStatus = s.getStatus();
+                /*
+                * offset == 0 is true ; offset == 1 is false.
+                * */
+            List<Boolean> offset = new ArrayList<>(OFFSET_LENGTH);
+            for (int i = 0; i < OFFSET_LENGTH; i++) {
+                offset.add(offset.size(), 0 == (tmpStatus & tmp));
+                tmpStatus = tmpStatus >> 1;
+            }
+            result.put(s.getGroupId() + "_" + s.getIp(), offset);
+        }
+        return result;
     }
 
     @Override
     public void upServer(String ip) throws Exception {
 
-        serverStatusOperation(ip,true);
+        serverStatusOperation(ip, true);
     }
 
     @Override
     public void downServer(String ip) throws Exception {
 
-        serverStatusOperation(ip,false);
+        serverStatusOperation(ip, false);
     }
 
-    private void serverStatusOperation(String ip , boolean status) throws Exception {
-
-        statusServerService.updateStatusServer(new StatusServerDo().setIp(ip).setUp(status));
-
-        logger.info("server status up ; server ip :"+ip+",Status: "+(status?"UP":"Down"));
+    private void serverStatusOperation(String ip, boolean status) throws Exception {
+        statusServerDao.insert(new StatusServerDo().setIp(ip).setUp(status).setCreatedTime(new Date()));
+        logger.info("server status up ; server ip :" + ip + ",Status: " + (status ? "UP" : "Down"));
     }
-
 
     @Override
-    public void upMember(Long slbId ,Long groupId, List<String> ips) throws Exception {
-        Group group;
-        if(activateService.isGroupActivated(groupId,slbId)){
-            group = activateService.getActivatedGroup(groupId,slbId);
-        }else {
-            group = groupRepository.getById(groupId);
+    public void updateStatus(Long groupId, List<String> ips, int offset, boolean status) throws Exception {
+        if (offset > OFFSET_LENGTH || offset < 0) {
+            throw new Exception("offset of status should be [0-" + OFFSET_LENGTH + "]");
         }
-        if (group == null){
-            return;
-        }
-        for (String ip : ips){
-            statusGroupServerService.deleteByGroupIdAndSlbIdAndIp(slbId,groupId,ip);
-        }
-        List<GroupVirtualServer> groupVirtualServers = group.getGroupVirtualServers();
-        for (GroupVirtualServer groupVirtualServer : groupVirtualServers){
-            if (!groupVirtualServer.getVirtualServer().getSlbId().equals(slbId)){
+        for (String ip : ips) {
+            if (ip == null || ip.isEmpty()) {
                 continue;
             }
-            for (String ip : ips) {
-                if (ip==null||ip.isEmpty())
-                {
-                    continue;
-                }
-                statusGroupServerService.updateStatusGroupServer(new StatusGroupServerDo().setSlbId(groupVirtualServer.getVirtualServer().getSlbId())
-                        .setSlbVirtualServerId(groupVirtualServer.getVirtualServer().getId()).setGroupId(groupId).setIp(ip).setUp(true));
-            }
-            logger.info("[up Member]: VirtualServer:"+groupVirtualServer.toString()+"ips:"+ips.toString());
+            GroupServerStatusDo data = new GroupServerStatusDo();
+            data.setGroupId(groupId);
+            data.setIp(ip);
+            data.setCreatedTime(new Date());
+            int reset = ~(1 << offset);
+            int updatestatus = (status ? 0 : 1) << offset;
+            data.setReset(reset).setStatus(updatestatus);
+            groupServerStatusDao.updateStatus(data);
         }
     }
 
     @Override
-    public void downMember(Long slbId ,Long groupId, List<String> ips) throws Exception {
-        Group group;
-        if(activateService.isGroupActivated(groupId,slbId)){
-            group = activateService.getActivatedGroup(groupId,slbId);
-        }else {
-            group = groupRepository.getById(groupId);
-        }
-        if (group == null){
-            return;
-        }
-        for (String ip : ips){
-            statusGroupServerService.deleteByGroupIdAndSlbIdAndIp(slbId,groupId,ip);
-        }
-        List<GroupVirtualServer> groupVirtualServers = group.getGroupVirtualServers();
-        for (GroupVirtualServer groupVirtualServer : groupVirtualServers){
-            if (!groupVirtualServer.getVirtualServer().getSlbId().equals(slbId)){
-                continue;
+    public void updateStatus(List<UpdateStatusItem> items) throws Exception {
+        List<GroupServerStatusDo> updateDatas = new ArrayList<>();
+        for (UpdateStatusItem item : items) {
+            if (item.getOffset() > OFFSET_LENGTH || item.getOffset() < 0) {
+                throw new Exception("offset of status should be [0-" + OFFSET_LENGTH + "]");
             }
-            for (String ip : ips) {
-                if (ip==null||ip.isEmpty())
-                {
+            for (String ip : item.getIpses()) {
+                if (ip == null || ip.isEmpty()) {
                     continue;
                 }
-                statusGroupServerService.updateStatusGroupServer(new StatusGroupServerDo().setSlbId(groupVirtualServer.getVirtualServer().getSlbId())
-                        .setSlbVirtualServerId(groupVirtualServer.getVirtualServer().getId()).setGroupId(groupId).setIp(ip).setUp(false));
+                GroupServerStatusDo data = new GroupServerStatusDo();
+                data.setGroupId(item.getGroupId());
+                data.setIp(ip);
+                data.setCreatedTime(new Date());
+                int reset = ~(1 << item.getOffset());
+                int updatestatus = (item.isUp() ? 0 : 1) << item.getOffset();
+                data.setReset(reset).setStatus(updatestatus);
+                updateDatas.add(data);
             }
-            logger.info("[down Member]: VirtualServer:"+groupVirtualServer.toString()+"ips:"+ips.toString());
         }
+        groupServerStatusDao.batchUpdateStatus(updateDatas.toArray(new GroupServerStatusDo[]{}));
     }
 
-    @Override
-    public boolean getGroupServerStatus(Long slbId, Long groupId, String vsip) throws Exception {
-
-        List<StatusGroupServerDo> list = statusGroupServerService.listBySlbIdAndGroupIdAndIp(slbId, groupId, vsip);
-        if (list!=null&&list.size()>0)
-        {
-            return list.get(0).isUp();
-        }
-        return false;
-    }
 
     @Override
     public boolean getServerStatus(String vsip) throws Exception {
-        List<StatusServerDo> list = statusServerService.listByIp(vsip);
-        if (list!=null&&list.size()>0)
-        {
+        List<StatusServerDo> list = statusServerDao.findAllByIp(vsip, StatusServerEntity.READSET_FULL);
+        if (list != null && list.size() > 0) {
             return list.get(0).isUp();
         }
         return true;
+    }
+
+    @Override
+    public void groupServerStatusInit(Long groupId, Long[] vsIds, String[] ips) throws Exception {
+        /*
+        * only called in group resource api
+        * */
+        for (String ip : ips) {
+            groupServerStatusDao.insert(new GroupServerStatusDo()
+                    .setGroupId(groupId)
+                    .setIp(ip)
+                    .setStatus(statusOffset.getDefaultStatus())
+                    .setCreatedTime(new Date()));
+        }
+
+    }
+
+    @Override
+    public void cleanGroupServerStatus(Long groupId) throws Exception {
+        groupServerStatusDao.deleteByGroupId(new GroupServerStatusDo().setGroupId(groupId));
+
     }
 }

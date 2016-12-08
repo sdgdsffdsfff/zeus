@@ -1,21 +1,18 @@
 package com.ctrip.zeus.service.status.impl;
 
-import com.ctrip.zeus.client.LocalClient;
-import com.ctrip.zeus.client.StatusClient;
-import com.ctrip.zeus.model.entity.*;
-import com.ctrip.zeus.nginx.entity.S;
-import com.ctrip.zeus.nginx.entity.UpstreamStatus;
-import com.ctrip.zeus.service.activate.ActivateService;
-import com.ctrip.zeus.service.activate.ActiveConfService;
-import com.ctrip.zeus.service.model.GroupRepository;
-import com.ctrip.zeus.service.model.SlbRepository;
+import com.ctrip.zeus.dal.core.ConfSlbActiveDao;
+import com.ctrip.zeus.model.entity.Group;
+import com.ctrip.zeus.model.entity.GroupServer;
+import com.ctrip.zeus.service.model.*;
+import com.ctrip.zeus.service.query.GroupCriteriaQuery;
+import com.ctrip.zeus.service.query.SlbCriteriaQuery;
+import com.ctrip.zeus.service.query.VirtualServerCriteriaQuery;
 import com.ctrip.zeus.service.status.GroupStatusService;
+import com.ctrip.zeus.service.status.StatusOffset;
 import com.ctrip.zeus.service.status.StatusService;
 import com.ctrip.zeus.status.entity.GroupServerStatus;
 import com.ctrip.zeus.status.entity.GroupStatus;
-import com.ctrip.zeus.status.entity.GroupStatusList;
-import com.ctrip.zeus.util.AssertUtils;
-import com.netflix.config.DynamicIntProperty;
+import com.netflix.config.DynamicBooleanProperty;
 import com.netflix.config.DynamicPropertyFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,7 +20,6 @@ import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
 import java.util.*;
-import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * User: mag
@@ -32,199 +28,232 @@ import java.util.concurrent.ThreadLocalRandom;
  */
 @Service("groupStatusService")
 public class GroupStatusServiceImpl implements GroupStatusService {
-    private static DynamicIntProperty nginxStatusPort = DynamicPropertyFactory.getInstance().getIntProperty("slb.nginx.status-port", 10001);
-    private static DynamicIntProperty adminServerPort = DynamicPropertyFactory.getInstance().getIntProperty("server.port", 8099);
 
     @Resource
     SlbRepository slbRepository;
-
+    @Resource
+    SlbCriteriaQuery slbCriteriaQuery;
+    @Resource
+    GroupCriteriaQuery groupCriteriaQuery;
+    @Resource
+    VirtualServerCriteriaQuery virtualServerCriteriaQuery;
     @Resource
     GroupRepository groupRepository;
-
     @Resource
     StatusService statusService;
     @Resource
-    private ActivateService activateService;
+    ConfSlbActiveDao confSlbActiveDao;
     @Resource
-    private ActiveConfService activeConfService;
+    EntityFactory entityFactory;
 
 
-    private long currentSlbId = -1L;
     private Logger LOGGER = LoggerFactory.getLogger(GroupStatusServiceImpl.class);
 
     @Override
-    public List<GroupStatus> getAllGroupStatus() throws Exception {
+    public List<GroupStatus> getAllOnlineGroupsStatus() throws Exception {
         List<GroupStatus> result = new ArrayList<>();
-        List<Slb> slbList = slbRepository.list();
-        for (Slb slb : slbList) {
-            result.addAll(getAllGroupStatus(slb.getId()));
+        Set<IdVersion> slbIds = slbCriteriaQuery.queryAll(SelectionMode.ONLINE_EXCLUSIVE);
+        for (IdVersion slb : slbIds) {
+            result.addAll(getOnlineGroupsStatusBySlbId(slb.getId()));
         }
         return result;
     }
 
     @Override
-    public List<GroupStatus> getAllGroupStatus(Long slbId) throws Exception {
+    public List<GroupStatus> getAllOfflineGroupsStatus() throws Exception {
         List<GroupStatus> result = new ArrayList<>();
-        List<Group> groups = groupRepository.list(slbId);
-        List<Long> list = new ArrayList<>();
-        Set<Long> groupIds = new HashSet<>();
-        for (Group group : groups) {
-            groupIds.add(group.getId());
+        Set<IdVersion> slbIds = slbCriteriaQuery.queryAll(SelectionMode.OFFLINE_FIRST);
+        for (IdVersion slb : slbIds) {
+            result.addAll(getOfflineGroupsStatusBySlbId(slb.getId()));
         }
-        Set<Long> activated = activeConfService.getGroupIdsBySlbId(slbId);
-        if (activated != null)
-        {
-            groupIds.addAll(activated);
-        }
-        list.addAll(groupIds);
-        if ( list.size() == 0 ){
+        return result;
+    }
+
+    @Override
+    public List<GroupStatus> getOnlineGroupsStatusBySlbId(Long slbId) throws Exception {
+        List<GroupStatus> result = new ArrayList<>();
+        Long[] vses = entityFactory.getVsIdsBySlbId(slbId, SelectionMode.ONLINE_EXCLUSIVE);
+        ModelStatusMapping<Group> groups = entityFactory.getGroupsByVsIds(vses);
+        if (groups.getOnlineMapping() == null || groups.getOnlineMapping().size() == 0) {
             return result;
         }
-        GroupStatusList appStatus = getGroupStatus(list, slbId);
-        result.addAll(appStatus.getGroupStatuses());
+        result = getOnlineGroupsStatus(groups.getOnlineMapping());
         return result;
     }
 
     @Override
-    public List<GroupStatus> getGroupStatus(Long groupId) throws Exception {
+    public List<GroupStatus> getOfflineGroupsStatusBySlbId(Long slbId) throws Exception {
         List<GroupStatus> result = new ArrayList<>();
-        List<Slb> slbList = slbRepository.listByGroups(new Long[]{groupId});
-        List<Long> list = new ArrayList<>();
-        list.add(groupId);
-        for (Slb slb : slbList) {
-            result.addAll(getGroupStatus(list, slb.getId()).getGroupStatuses());
+        Long[] vses = entityFactory.getVsIdsBySlbId(slbId, SelectionMode.OFFLINE_FIRST);
+        ModelStatusMapping<Group> groups = entityFactory.getGroupsByVsIds(vses);
+        if (groups.getOfflineMapping() == null || groups.getOfflineMapping().size() == 0) {
+            return result;
+        }
+        result = getOfflineGroupsStatus(groups);
+        return result;
+    }
+
+    @Override
+    public GroupStatus getOnlineGroupStatus(Long groupId) throws Exception {
+        GroupStatus result = null;
+        ModelStatusMapping<Group> groupMap = entityFactory.getGroupsByIds(new Long[]{groupId});
+        if (groupMap.getOnlineMapping().size() == 0) {
+            return result;
+        }
+        List<GroupStatus> list = getOnlineGroupsStatus(groupMap.getOnlineMapping());
+        if (list.size() > 0) {
+            result = list.get(0);
         }
         return result;
     }
+
     @Override
-    public GroupStatusList getLocalGroupStatus(List<Long> groupIds , Long slbId) throws Exception
-    {
-        GroupStatusList res = new GroupStatusList();
-        GroupStatus status = null;
-        Slb slb = slbRepository.getById(slbId);
-        AssertUtils.assertNotNull(slb, "slb Id not found!");
-        List<Group> groups = groupRepository.list(groupIds.toArray(new Long[]{}));
-        HashMap<Long,Boolean> isActivated = activateService.isGroupsActivated(groupIds.toArray(new Long[]{}),slbId);
-        Set<String> allUpGroupServerInSlb = statusService.findAllUpGroupServersBySlbId(slbId);
-        Set<String> allDownServers = statusService.findAllDownServers();
-
-        for (Group group : groups)
-        {
-            Long groupId = group.getId();
-
-            status = new GroupStatus();
-            status.setGroupId(groupId);
-            status.setSlbId(slbId);
-            status.setGroupName(group.getName());
-            status.setSlbName(slb.getName());
-            status.setActivated(isActivated.get(groupId));
-
-            Group activatedGroup = null;
-            Map<String,Integer> ipPort = new HashMap<>();
-            List<String> activatedIps = new ArrayList<>();
-            if (isActivated.get(groupId))
-            {
-                activatedGroup = activateService.getActivatedGroup(groupId,slbId);
-                if (activatedGroup!=null) {
-                    for (GroupServer gs : activatedGroup.getGroupServers()){
-                        ipPort.put(gs.getIp(),gs.getPort());
-                        activatedIps.add(gs.getIp());
-                    }
-                }
-            }
-            List<GroupServer> groupServerList = group.getGroupServers();//groupRepository.listGroupServersByGroup(groupId);
-            List<String> ips = new ArrayList<>();
-
-            for (GroupServer gs : groupServerList){
-                ipPort.put(gs.getIp(),gs.getPort());
-                ips.add(gs.getIp());
-            }
-            for (String ip : ipPort.keySet()) {
-                GroupServerStatus serverStatus = getGroupServerStatus(groupId, slbId, ip, ipPort.get(ip),allDownServers,allUpGroupServerInSlb,group);
-                if (activatedIps.contains(ip)&&ips.contains(ip)){
-                    serverStatus.setDiscription("Activated");
-                }else if (!activatedIps.contains(ip)&&ips.contains(ip)){
-                    serverStatus.setDiscription("To Activate");
-                }else if (activatedIps.contains(ip)&&!ips.contains(ip)){
-                    serverStatus.setDiscription("To Deactivate");
-                }
-                status.addGroupServerStatus(serverStatus);
-            }
-            res.addGroupStatus(status);
+    public GroupStatus getOfflineGroupStatus(Long groupId) throws Exception {
+        GroupStatus result = null;
+        ModelStatusMapping<Group> groupMap = entityFactory.getGroupsByIds(new Long[]{groupId});
+        if (groupMap.getOfflineMapping().size() == 0) {
+            return result;
         }
-        res.setTotal(res.getGroupStatuses().size());
+
+        List<GroupStatus> list = getOfflineGroupsStatus(groupMap);
+        if (list.size() > 0) {
+            result = list.get(0);
+        }
+        return result;
+    }
+
+    @Override
+    public List<GroupStatus> getOfflineGroupsStatus(Set<Long> groupIds) throws Exception {
+        List<GroupStatus> result = new ArrayList<>();
+        ModelStatusMapping<Group> map = entityFactory.getGroupsByIds(groupIds.toArray(new Long[]{}));
+        if (map.getOfflineMapping() == null || map.getOfflineMapping().size() == 0) {
+            return result;
+        }
+        result = getOfflineGroupsStatus(map);
+        return result;
+    }
+
+    @Override
+    public List<GroupStatus> getOnlineGroupsStatus(Map<Long, Group> groups) throws Exception {
+        List<GroupStatus> res = new ArrayList<>();
+        GroupStatus status = new GroupStatus();
+
+        Map<String, List<Boolean>> memberStatus = statusService.fetchGroupServerStatus(groups.keySet().toArray(new Long[]{}));
+        Set<String> allDownServers = statusService.findAllDownServers();
+        for (Group group : groups.values()) {
+            Long groupId = group.getId();
+            status.setGroupId(groupId);
+            status.setGroupName(group.getName());
+            status.setActivated(true);
+
+            List<GroupServer> groupServerList = group.getGroupServers();
+            for (GroupServer gs : groupServerList) {
+                GroupServerStatus groupServerStatus = new GroupServerStatus();
+                groupServerStatus.setIp(gs.getIp());
+                groupServerStatus.setPort(gs.getPort());
+                String key = groupId + "_" + gs.getIp();
+                if (memberStatus.get(key) == null) {
+                    LOGGER.error("[StatusError]Group Member Status is missing. groupId:" + groupId + "ip:" + gs.getIp());
+                    continue;
+                }
+                boolean memberUp = memberStatus.get(key).get(StatusOffset.MEMBER_OPS);
+                boolean serverUp = !allDownServers.contains(gs.getIp());
+                boolean pullIn = memberStatus.get(key).get(StatusOffset.PULL_OPS);
+                boolean raise = memberStatus.get(key).get(StatusOffset.HEALTHY);
+                boolean up = memberUp && serverUp && pullIn && raise;
+
+                groupServerStatus.setServer(serverUp);
+                groupServerStatus.setMember(memberUp);
+                groupServerStatus.setPull(pullIn);
+                groupServerStatus.setHealthy(raise);
+                groupServerStatus.setUp(up);
+                groupServerStatus.setOnline(true);
+                status.addGroupServerStatus(groupServerStatus);
+            }
+            res.add(status);
+        }
         return res;
     }
-    @Override
-    public GroupStatusList getGroupStatus(List<Long> groupIds, Long slbId) throws Exception {
-        Slb slb = slbRepository.getById(slbId);
-        AssertUtils.assertNotNull(slb, "slbId not found!");
-        AssertUtils.assertNotEquals(0, slb.getSlbServers().size(), "Slb doesn't have any slb server!");
-        int index = ThreadLocalRandom.current().nextInt(slb.getSlbServers().size());
-        StatusClient client = StatusClient.getClient("http://"+slb.getSlbServers().get(index).getIp()+":"+adminServerPort.get());
-        return client.getGroupStatus(groupIds,slbId);
-    }
 
     @Override
-    public GroupStatus getGroupStatus(Long groupId, Long slbId) throws Exception {
-        List<Long> list = new ArrayList<>();
-        list.add(groupId);
-        GroupStatusList res = getGroupStatus(list,slbId);
-        if (res!=null&&!res.getGroupStatuses().isEmpty())
-        {
-            return res.getGroupStatuses().get(0);
-        }else{
-            return new GroupStatus();
-        }
-    }
+    public List<GroupStatus> getOfflineGroupsStatus(ModelStatusMapping<Group> groupMap) throws Exception {
+        List<GroupStatus> res = new ArrayList<>();
 
+        Map<Long, Group> groups = groupMap.getOfflineMapping();
+        Map<Long, Group> onlineGroups = groupMap.getOnlineMapping();
 
-    @Override
-    public GroupServerStatus getGroupServerStatus(Long groupId, Long slbId, String ip, Integer port , Set<String> allDownServers,Set<String> allUpGroupServerInSlb,Group group) throws Exception {
+        Map<String, List<Boolean>> memberStatus = statusService.fetchGroupServerStatus(groups.keySet().toArray(new Long[]{}));
+        Set<String> allDownServers = statusService.findAllDownServers();
 
-        GroupServerStatus groupServerStatus = new GroupServerStatus();
-        groupServerStatus.setIp(ip);
-        groupServerStatus.setPort(port);
-        StringBuilder sb = new StringBuilder(64);
-        sb.append(slbId).append("_").append(group.getGroupVirtualServers().get(0).getVirtualServer().getId()).append("_").append(groupId).append("_").append(ip);
+        for (Group group : groups.values()) {
+            GroupStatus status = new GroupStatus();
+            Long groupId = group.getId();
+            status.setGroupId(groupId);
+            status.setGroupName(group.getName());
+            status.setActivated(onlineGroups.containsKey(groupId));
 
-        boolean memberUp = allUpGroupServerInSlb.contains(sb.toString());
-        boolean serverUp = !allDownServers.contains(ip);
-        boolean backendUp = getUpstreamStatus(groupId,ip,memberUp,serverUp);
-
-        groupServerStatus.setServer(serverUp);
-        groupServerStatus.setMember(memberUp);
-        groupServerStatus.setUp(backendUp);
-
-        return groupServerStatus;
-    }
-
-
-    //TODO: should include port to get accurate upstream
-    private boolean getUpstreamStatus(Long groupId, String ip , boolean memberUp , boolean serverUp) throws Exception {
-        UpstreamStatus upstreamStatus = LocalClient.getInstance().getUpstreamStatus();
-        List<S> servers = upstreamStatus.getServers().getServer();
-        String upstreamNameEndWith = "_"+groupId;
-        for (S server : servers) {
-            if (!server.getUpstream().endsWith(upstreamNameEndWith))
-            {
-                continue;
-            }
-            String ipPort = server.getName();
-            String[] ipPorts = ipPort.split(":");
-            if (ipPorts.length == 2){
-                if (ipPorts[0].equals(ip)){
-                    boolean flag = "up".equalsIgnoreCase(server.getStatus());
-                    if (!(memberUp&&serverUp)&&flag)
-                    {
-                        LOGGER.error("nginx status api return status while memberUp or serverUp is down! ip:"+ip+" groupId:"+groupId);
-                    }
-                    return flag;
+            Group onlineGroup = onlineGroups.get(groupId);
+            Set<String> onlineMembers = new HashSet<>();
+            Set<String> offlineMembers = new HashSet<>();
+            Map<String, GroupServer> members = new HashMap<>();
+            if (onlineGroup != null) {
+                for (GroupServer groupServer : onlineGroup.getGroupServers()) {
+                    onlineMembers.add(groupServer.getIp());
+                    members.put(groupServer.getIp(), groupServer);
                 }
             }
+            List<GroupServer> groupServerList = group.getGroupServers();
+            for (GroupServer gs : groupServerList) {
+                offlineMembers.add(gs.getIp());
+                members.put(gs.getIp(), gs);
+            }
+            for (GroupServer gs : members.values()) {
+                GroupServerStatus groupServerStatus = new GroupServerStatus();
+                groupServerStatus.setIp(gs.getIp());
+                groupServerStatus.setPort(gs.getPort());
+                String key = groupId + "_" + gs.getIp();
+                if (memberStatus.get(key) == null) {
+                    LOGGER.error("[StatusError]Group Member Status is missing. groupId:" + groupId + "ip:" + gs.getIp());
+                    continue;
+                }
+                boolean memberUp = memberStatus.get(key).get(StatusOffset.MEMBER_OPS);
+                boolean serverUp = !allDownServers.contains(gs.getIp());
+                boolean pullIn = memberStatus.get(key).get(StatusOffset.PULL_OPS);
+                boolean raise = memberStatus.get(key).get(StatusOffset.HEALTHY);
+                boolean up = memberUp && serverUp && pullIn && raise;
+                NextStatus nextStatus = NextStatus.Online;
+                boolean online = onlineMembers.contains(gs.getIp());
+                if (!online) {
+                    up = false;
+                }
+                if (onlineMembers.contains(gs.getIp()) && offlineMembers.contains(gs.getIp())) {
+                    nextStatus = NextStatus.Online;
+                } else if (onlineMembers.contains(gs.getIp()) && !offlineMembers.contains(gs.getIp())) {
+                    nextStatus = NextStatus.ToBeOffline;
+                } else if (!onlineMembers.contains(gs.getIp()) && offlineMembers.contains(gs.getIp())) {
+                    nextStatus = NextStatus.ToBeOnline;
+                }
+                groupServerStatus.setServer(serverUp);
+                groupServerStatus.setMember(memberUp);
+                groupServerStatus.setPull(pullIn);
+                groupServerStatus.setHealthy(raise);
+                groupServerStatus.setUp(up);
+                groupServerStatus.setOnline(onlineMembers.contains(gs.getIp()));
+                groupServerStatus.setNextStatus(nextStatus.getName());
+                status.addGroupServerStatus(groupServerStatus);
+            }
+            res.add(status);
         }
-        //Not found status from nginx , ip is mark down or health check is disable
-        // return memberUp&&serverUp
-        return memberUp&&serverUp;
+        return res;
+    }
+
+    enum NextStatus {
+        Online,
+        ToBeOnline,
+        ToBeOffline;
+
+        String getName() {
+            return name();
+        }
     }
 }

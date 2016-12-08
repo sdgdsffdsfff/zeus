@@ -3,12 +3,14 @@ package com.ctrip.zeus.service.build.impl;
 import com.ctrip.zeus.model.entity.Group;
 import com.ctrip.zeus.model.entity.Slb;
 import com.ctrip.zeus.model.entity.VirtualServer;
+import com.ctrip.zeus.nginx.entity.ConfFile;
 import com.ctrip.zeus.service.build.NginxConfBuilder;
 import com.ctrip.zeus.service.build.conf.NginxConf;
 import com.ctrip.zeus.service.build.conf.ServerConf;
 import com.ctrip.zeus.service.build.conf.UpstreamsConf;
 import org.springframework.stereotype.Service;
 
+import javax.annotation.Resource;
 import java.util.List;
 import java.util.Set;
 
@@ -17,18 +19,28 @@ import java.util.Set;
  */
 @Service("nginxConfigBuilder")
 public class NginxConfBuilderImpl implements NginxConfBuilder {
+
+    @Resource
+    NginxConf nginxConf;
+    @Resource
+    ServerConf serverConf;
+    @Resource
+    UpstreamsConf upstreamsConf;
+
     @Override
-    public String generateNginxConf(Slb slb) {
-        return NginxConf.generate(slb);
+    public String generateNginxConf(Slb slb) throws Exception{
+        return nginxConf.generate(slb);
     }
 
     @Override
     public String generateServerConf(Slb slb, VirtualServer vs, List<Group> groups) throws Exception{
-        return ServerConf.generate(slb,vs,groups);
+        return serverConf.generate(slb,vs,groups);
     }
 
     @Override
-    public String generateUpstreamsConf(Slb slb, VirtualServer vs, List<Group> groups, Set<String> allDownServers, Set<String> allUpGroupServers) throws Exception{
-        return UpstreamsConf.generate(slb,vs,groups,allDownServers,allUpGroupServers);
+    public List<ConfFile> generateUpstreamsConf(Set<Long> vsLookup, VirtualServer vs, List<Group> groups,
+                                                Set<String> allDownServers, Set<String> allUpGroupServers,
+                                                Set<String> visited) throws Exception {
+        return upstreamsConf.generate(vsLookup, vs, groups, allDownServers, allUpGroupServers, visited);
     }
 }

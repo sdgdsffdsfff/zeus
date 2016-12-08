@@ -6,7 +6,6 @@ import com.ctrip.zeus.tag.TagBox;
 import org.springframework.stereotype.Component;
 
 import javax.annotation.Resource;
-import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -20,21 +19,17 @@ public class DefaultTagBox implements TagBox {
     private TagItemDao tagItemDao;
 
     @Override
-    public List<String> getAllTags() throws Exception {
-        List<String> result = new ArrayList<>();
-        for (TagDo tagDo : tagDao.findAll(TagEntity.READSET_FULL)) {
-            result.add(tagDo.getName());
-        }
-        return result;
-    }
-
-    @Override
-    public void removeTag(String name) throws Exception {
+    public void removeTag(String name, boolean force) throws Exception {
         TagDo d = tagDao.findByName(name, TagEntity.READSET_FULL);
-        if (d == null)
-            return;
+        if (d == null) return;
+        if (force) {
+            tagItemDao.deleteTag(new TagItemDo().setTagId(d.getId()));
+        } else {
+            List<TagItemDo> check = tagItemDao.findByTag(d.getId(), TagItemEntity.READSET_FULL);
+            if (check.size() > 0)
+                throw new ValidationException("Combination exists with tag " + name + ".");
+        }
         tagDao.delete(d);
-        tagItemDao.deleteTag(new TagItemDo().setTagId(d.getId()));
     }
 
     @Override
@@ -73,6 +68,14 @@ public class DefaultTagBox implements TagBox {
             tagItemDao.deleteTagItems(l);
         } else {
             tagItemDao.deleteTagType(new TagItemDo().setTagId(d.getId()).setType(type));
+        }
+    }
+
+    @Override
+    public void clear(String type, Long itemId) throws Exception {
+        List<TagItemDo> list = tagItemDao.findByItemAndType(itemId, type, TagItemEntity.READSET_FULL);
+        if (list.size() > 0) {
+            tagItemDao.deleteById(list.toArray(new TagItemDo[list.size()]));
         }
     }
 }

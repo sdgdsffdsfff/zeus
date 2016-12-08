@@ -1,11 +1,14 @@
 package com.ctrip.zeus.client;
 
 import com.ctrip.zeus.model.entity.SlbValidateResponse;
-import com.ctrip.zeus.model.transform.DefaultJsonParser;
+import com.ctrip.zeus.support.ObjectJsonParser;
 import jersey.repackaged.com.google.common.cache.CacheBuilder;
 import jersey.repackaged.com.google.common.cache.CacheLoader;
 import jersey.repackaged.com.google.common.cache.LoadingCache;
 
+import javax.ws.rs.core.Response;
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
@@ -18,7 +21,7 @@ public class ValidateClient extends AbstractRestClient {
         super(url);
     }
 
-    private static LoadingCache<String,ValidateClient> cache = CacheBuilder.newBuilder().maximumSize(10)
+    private static LoadingCache<String, ValidateClient> cache = CacheBuilder.newBuilder().maximumSize(10)
             .expireAfterAccess(30, TimeUnit.MINUTES)
             .build(new CacheLoader<String, ValidateClient>() {
                        @Override
@@ -32,15 +35,24 @@ public class ValidateClient extends AbstractRestClient {
         return cache.get(url);
     }
 
-    public SlbValidateResponse slbValidate(Long slbId)throws Exception{
-        String responseStr = getTarget().path("/api/validate/slb").queryParam("slbId", slbId)
-                .request().headers(getDefaultHeaders()).get(String.class);
-        try{
-            return DefaultJsonParser.parse(SlbValidateResponse.class,responseStr);
-        }catch (Exception e )
-        {
-            SlbValidateResponse response = new SlbValidateResponse();
-            return response.setSucceed(false).setMsg(responseStr);
+    public SlbValidateResponse slbValidate(Long slbId) throws Exception {
+        Response response = getTarget().path("/api/validate/slb").queryParam("slbId", slbId)
+                .request().headers(getDefaultHeaders()).get();
+        InputStream in = (InputStream) response.getEntity();
+        ByteArrayOutputStream bs = new ByteArrayOutputStream();
+        byte[] bytes = new byte[256];
+        int i;
+        while ((i = in.read(bytes)) != -1) {
+            bs.write(bytes, 0, i);
+        }
+        if (response.getStatus() / 100 == 2) {
+            return ObjectJsonParser.parse(bs.toString(), SlbValidateResponse.class);
+        } else {
+            SlbValidateResponse res = new SlbValidateResponse();
+            res.setSlbId(slbId)
+                    .setSucceed(false)
+                    .setMsg(bs.toString());
+            return res;
         }
     }
 }

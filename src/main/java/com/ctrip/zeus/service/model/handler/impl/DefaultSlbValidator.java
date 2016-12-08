@@ -2,16 +2,19 @@ package com.ctrip.zeus.service.model.handler.impl;
 
 import com.ctrip.zeus.dal.core.*;
 import com.ctrip.zeus.exceptions.ValidationException;
-import com.ctrip.zeus.model.entity.Domain;
 import com.ctrip.zeus.model.entity.Slb;
-import com.ctrip.zeus.model.entity.VirtualServer;
+import com.ctrip.zeus.model.entity.SlbServer;
+import com.ctrip.zeus.service.model.IdVersion;
+import com.ctrip.zeus.service.model.SelectionMode;
 import com.ctrip.zeus.service.model.handler.SlbValidator;
-import com.netflix.config.DynamicPropertyFactory;
-import com.netflix.config.DynamicStringProperty;
+import com.ctrip.zeus.service.query.SlbCriteriaQuery;
+import com.ctrip.zeus.service.query.VirtualServerCriteriaQuery;
+import com.google.common.base.Joiner;
 import org.springframework.stereotype.Component;
 
 import javax.annotation.Resource;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.Set;
 
 /**
@@ -20,56 +23,78 @@ import java.util.Set;
 @Component("slbModelValidator")
 public class DefaultSlbValidator implements SlbValidator {
     @Resource
-    private GroupSlbDao groupSlbDao;
-    private DynamicStringProperty portWhiteList = DynamicPropertyFactory.getInstance().getStringProperty("port.whitelist", "80,443");
+    private SlbCriteriaQuery slbCriteriaQuery;
+    @Resource
+    private VirtualServerCriteriaQuery virtualServerCriteriaQuery;
+    @Resource
+    private SlbDao slbDao;
+    @Resource
+    private RSlbStatusDao rSlbStatusDao;
+
+    @Override
+    public boolean exists(Long targetId) throws Exception {
+        return slbDao.findById(targetId, SlbEntity.READSET_FULL) != null;
+    }
 
     @Override
     public void validate(Slb slb) throws Exception {
-        if (slb == null || slb.getName() == null || slb.getName().isEmpty()) {
-            throw new ValidationException("Slb with null value cannot be persisted.");
+        if (slb.getName() == null || slb.getName().isEmpty()) {
+            throw new ValidationException("Slb name is required.");
+        }
+        if (slb.getVips() == null || slb.getVips().size() == 0) {
+            throw new ValidationException("Slb vip is required.");
         }
         if (slb.getSlbServers() == null || slb.getSlbServers().size() == 0) {
-            throw new ValidationException("Slb without slb servers cannot be persisted.");
+            throw new ValidationException("Slb without slb servers cannot be created.");
         }
-    }
-
-    @Override
-    public void checkVirtualServerDependencies(VirtualServer[] virtualServers) throws Exception {
-        for (VirtualServer vs : virtualServers) {
-            if (groupSlbDao.findAllByVirtualServer(vs.getId(), GroupSlbEntity.READSET_FULL).size() > 0)
-                throw new ValidationException("Virtual server with id " + vs.getId() + " cannot be deleted. Dependencies exist.");
+        Long nameCheck = slbCriteriaQuery.queryByName(slb.getName());
+        if (!nameCheck.equals(0L) && !nameCheck.equals(slb.getId())) {
+            throw new ValidationException("Duplicate name " + slb.getName() + " is found at slb " + nameCheck + ".");
         }
-    }
 
-    @Override
-    public void validateVirtualServer(VirtualServer[] virtualServers) throws Exception {
-        Set<String> existingHost = new HashSet<>();
-        for (VirtualServer virtualServer : virtualServers) {
-            for (Domain domain : virtualServer.getDomains()) {
-                if (!getPortWhiteList().contains(virtualServer.getPort())) {
-                    throw new ValidationException("Port " + virtualServer.getPort() + " is not allowed.");
+        Set<String> ips = new HashSet<>();
+        // check if any other slb version who has the server ip is still in effect.
+        for (SlbServer slbServer : slb.getSlbServers()) {
+            if (!ips.add(slbServer.getIp())) {
+                throw new ValidationException("Duplicate ip " + slbServer.getIp() + " is found.");
+            }
+
+            Set<IdVersion> range = slbCriteriaQuery.queryBySlbServerIp(slbServer.getIp());
+            Set<Long> check = new HashSet<>();
+            Iterator<IdVersion> iter = range.iterator();
+            while (iter.hasNext()) {
+                Long e = iter.next().getId();
+                if (e.equals(slb.getId())) {
+                    iter.remove();
+                } else {
+                    check.add(e);
                 }
-                String key = domain.getName() + ":" + virtualServer.getPort();
-                if (existingHost.contains(key))
-                    throw new ValidationException("Duplicate domain and port combination is found: " + key);
-                else
-                    existingHost.add(key);
+            }
+            if (check.size() == 0)
+                return;
+            check.remove(slb.getId());
+            if (check.size() > 0) {
+                throw new ValidationException("Slb server " + slbServer.getIp() + " exists in the system. Unique server ip is required.");
             }
         }
     }
 
-    private Set<String> getPortWhiteList() {
-        Set<String> result = new HashSet<>();
-        String whiteList = portWhiteList.get();
-        for (String s : whiteList.split(",")) {
-            result.add(s.trim());
-        }
-        return result;
+    @Override
+    public void checkVersion(Slb target) throws Exception {
+        SlbDo check = slbDao.findById(target.getId(), SlbEntity.READSET_FULL);
+        if (check == null)
+            throw new ValidationException("Slb with id " + target.getId() + " does not exist.");
+        if (!target.getVersion().equals(check.getVersion()))
+            throw new ValidationException("Newer Group version is detected.");
     }
 
     @Override
     public void removable(Long slbId) throws Exception {
-        if (groupSlbDao.findAllBySlb(slbId, GroupSlbEntity.READSET_FULL).size() > 0)
+        if (virtualServerCriteriaQuery.queryBySlbId(slbId).size() > 0) {
             throw new ValidationException("Slb with id " + slbId + " cannot be deleted. Dependencies exist.");
+        }
+        if (rSlbStatusDao.findBySlb(slbId, RSlbStatusEntity.READSET_FULL).getOnlineVersion() != 0) {
+            throw new ValidationException("Slb must be deactivated before deletion.");
+        }
     }
 }

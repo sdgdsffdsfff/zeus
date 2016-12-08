@@ -19,6 +19,7 @@ import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Created by zhoumy on 2015/7/16.
@@ -40,16 +41,25 @@ public class TagResource {
                              @Context HttpServletRequest request,
                              @QueryParam("type") String type,
                              @QueryParam("targetId") Long targetId) throws Exception {
-        List<String> list;
-        if (type != null && targetId != null) {
-            list = tagService.getTags(type, targetId);
-        } else {
-            list = tagBox.getAllTags();
+        List<String> tags = null;
+        if (type != null) {
+            if (targetId != null) {
+                tags = tagService.getTags(type, targetId);
+            } else {
+                Set<Long> tagIds = tagService.queryByType(type);
+                tags = tagService.getTags(tagIds.toArray(new Long[tagIds.size()]));
+            }
         }
-        TagList tagList = new TagList().setTotal(list.size());
-        for (String s : list) {
-            tagList.addTag(s);
+
+        if (tags == null) {
+            tags = tagService.getAllTags();
         }
+
+        TagList tagList = new TagList();
+        for (String t : tags) {
+            tagList.addTag(t);
+        }
+        tagList.setTotal(tagList.getTags().size());
         return responseHandler.handle(tagList, hh.getMediaType());
     }
 
@@ -100,10 +110,36 @@ public class TagResource {
                 tagBox.untagging(tagName, type, null);
                 return responseHandler.handle("Untagged all the items with typeName - " + type + " from " + tagName + ".", hh.getMediaType());
             } else {
-                tagBox.removeTag(tagName);
-                return responseHandler.handle("Deleted tag named " + tagName + ".", hh.getMediaType());
+                throw new ValidationException("Type is required when doing batch untagging.");
             }
         }
-        throw new ValidationException("At least one parameter is missing.");
+        return responseHandler.handle("No action is performed.", hh.getMediaType());
+    }
+
+    @GET
+    @Path("/tag/remove")
+    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
+    public Response removeTag(@Context HttpHeaders hh,
+                              @Context HttpServletRequest request,
+                              @QueryParam("tagName") String tagName,
+                              @QueryParam("force") Boolean force) throws Exception {
+        if (tagName == null) throw new ValidationException("Tag name is required.");
+        boolean forceEnabled = force != null && force;
+        tagBox.removeTag(tagName, forceEnabled);
+        return responseHandler.handle("Successfully removed tag - " + tagName + ".", hh.getMediaType());
+    }
+
+    @GET
+    @Path(("/tag/clear"))
+    @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
+    public Response clearTag(@Context HttpHeaders hh,
+                             @Context HttpServletRequest request,
+                             @QueryParam("targetId") Long targetId,
+                             @QueryParam("type") String type) throws Exception {
+        if (targetId == null || type == null) {
+            throw new ValidationException("Query Param targetId and type is required.");
+        }
+        tagBox.clear(type, targetId);
+        return responseHandler.handle("Successfully clear tag from " + type + " " + targetId + ".", hh.getMediaType());
     }
 }
