@@ -12,12 +12,20 @@
         <constructor-arg type="java.lang.Class" value="com.ctrip.zeus.dal.core.AppInfoDao"/>
     </bean>
 
+    <bean id="archiveCommitDao" factory-bean="daoFactory" factory-method="getDao">
+        <constructor-arg type="java.lang.Class" value="com.ctrip.zeus.dal.core.ArchiveCommitDao"/>
+    </bean>
+
     <bean id="archiveGroupDao" factory-bean="daoFactory" factory-method="getDao">
         <constructor-arg type="java.lang.Class" value="com.ctrip.zeus.dal.core.ArchiveGroupDao"/>
     </bean>
 
     <bean id="archiveSlbDao" factory-bean="daoFactory" factory-method="getDao">
         <constructor-arg type="java.lang.Class" value="com.ctrip.zeus.dal.core.ArchiveSlbDao"/>
+    </bean>
+
+    <bean id="archiveTrafficPolicyDao" factory-bean="daoFactory" factory-method="getDao">
+        <constructor-arg type="java.lang.Class" value="com.ctrip.zeus.dal.core.ArchiveTrafficPolicyDao"/>
     </bean>
 
     <bean id="archiveVsDao" factory-bean="daoFactory" factory-method="getDao">
@@ -204,6 +212,18 @@
         <constructor-arg type="java.lang.Class" value="com.ctrip.zeus.dal.core.RSlbStatusDao"/>
     </bean>
 
+    <bean id="rTrafficPolicyGroupDao" factory-bean="daoFactory" factory-method="getDao">
+        <constructor-arg type="java.lang.Class" value="com.ctrip.zeus.dal.core.RTrafficPolicyGroupDao"/>
+    </bean>
+
+    <bean id="rTrafficPolicyVsDao" factory-bean="daoFactory" factory-method="getDao">
+        <constructor-arg type="java.lang.Class" value="com.ctrip.zeus.dal.core.RTrafficPolicyVsDao"/>
+    </bean>
+
+    <bean id="ruleDao" factory-bean="daoFactory" factory-method="getDao">
+        <constructor-arg type="java.lang.Class" value="com.ctrip.zeus.dal.core.RuleDao"/>
+    </bean>
+
     <bean id="rVsDomainDao" factory-bean="daoFactory" factory-method="getDao">
         <constructor-arg type="java.lang.Class" value="com.ctrip.zeus.dal.core.RVsDomainDao"/>
     </bean>
@@ -244,6 +264,14 @@
         <constructor-arg type="java.lang.Class" value="com.ctrip.zeus.dal.core.SnapServerGroupDao"/>
     </bean>
 
+    <bean id="statsGroupSlbDao" factory-bean="daoFactory" factory-method="getDao">
+        <constructor-arg type="java.lang.Class" value="com.ctrip.zeus.dal.core.StatsGroupSlbDao"/>
+    </bean>
+
+    <bean id="statusCheckCountSlbDao" factory-bean="daoFactory" factory-method="getDao">
+        <constructor-arg type="java.lang.Class" value="com.ctrip.zeus.dal.core.StatusCheckCountSlbDao"/>
+    </bean>
+
     <bean id="statusGroupServerDao" factory-bean="daoFactory" factory-method="getDao">
         <constructor-arg type="java.lang.Class" value="com.ctrip.zeus.dal.core.StatusGroupServerDao"/>
     </bean>
@@ -266,6 +294,10 @@
 
     <bean id="taskDao" factory-bean="daoFactory" factory-method="getDao">
         <constructor-arg type="java.lang.Class" value="com.ctrip.zeus.dal.core.TaskDao"/>
+    </bean>
+
+    <bean id="trafficPolicyDao" factory-bean="daoFactory" factory-method="getDao">
+        <constructor-arg type="java.lang.Class" value="com.ctrip.zeus.dal.core.TrafficPolicyDao"/>
     </bean>
 
 </beans>

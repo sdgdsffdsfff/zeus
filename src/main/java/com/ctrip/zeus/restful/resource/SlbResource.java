@@ -76,7 +76,7 @@ public class SlbResource {
     Logger logger = LoggerFactory.getLogger(this.getClass());
 
     /**
-     * @api {get} /api/slbs: Request slb information
+     * @api {get} /api/slbs: [Read] Batch fetch slb data
      * @apiName ListSlbs
      * @apiGroup Slb
      * @apiParam {long[]} slbId         1,2,3
@@ -176,7 +176,14 @@ public class SlbResource {
         if (s == null) {
             throw new ValidationException("Invalid post entity. Fail to parse json to slb.");
         }
+        if (s.getName() == null) {
+            throw new ValidationException("Field `name` is not allowed empty.");
+        }
         trim(s);
+        Long checkId = slbCriteriaQuery.queryByName(s.getName());
+        if (checkId > 0L) {
+            throw new ValidationException("Slb name " + s.getName() + " has been taken by " + checkId + ".");
+        }
 
         s = slbRepository.add(s);
 
@@ -200,7 +207,7 @@ public class SlbResource {
             messageQueue.produceMessage(MessageType.NewSlb, s.getId(), slbMessageData);
         }
 
-        return responseHandler.handle(new ExtendedView.ExtendedSlb(s), hh.getMediaType());
+        return responseHandler.handleSerializedValue(ObjectJsonWriter.write(new ExtendedView.ExtendedSlb(s), ViewConstraints.DETAIL), hh.getMediaType());
     }
 
     @POST
@@ -213,7 +220,14 @@ public class SlbResource {
         if (s == null) {
             throw new ValidationException("Invalid post entity. Fail to parse json to slb.");
         }
+        if (s.getName() == null) {
+            throw new ValidationException("Field `name` is not allowed empty.");
+        }
         trim(s);
+        Long checkId = slbCriteriaQuery.queryByName(s.getName());
+        if (checkId > 0L && !checkId.equals(s.getId())) {
+            throw new ValidationException("Slb name " + s.getName() + " has been taken by " + checkId + ".");
+        }
 
         IdVersion[] check = slbCriteriaQuery.queryByIdAndMode(s.getId(), SelectionMode.OFFLINE_FIRST);
         if (check.length == 0) throw new ValidationException("Slb " + s.getId() + " cannot be found.");
@@ -247,7 +261,7 @@ public class SlbResource {
             messageQueue.produceMessage(MessageType.UpdateSlb, s.getId(), slbMessageData);
         }
 
-        return responseHandler.handle(new ExtendedView.ExtendedSlb(s), hh.getMediaType());
+        return responseHandler.handleSerializedValue(ObjectJsonWriter.write(new ExtendedView.ExtendedSlb(s), ViewConstraints.DETAIL), hh.getMediaType());
     }
 
     @GET
@@ -324,8 +338,8 @@ public class SlbResource {
         } catch (Exception ex) {
         }
 
-        String[]ips = new String[serverList.getSlbServers().size()];
-        for (int i = 0 ; i < ips.length ; i++){
+        String[] ips = new String[serverList.getSlbServers().size()];
+        for (int i = 0; i < ips.length; i++) {
             ips[i] = serverList.getSlbServers().get(i).getIp();
         }
         String slbMessageData = MessageUtil.getMessageData(request, null, null, new Slb[]{slb}, ips, true);
@@ -335,7 +349,7 @@ public class SlbResource {
             messageQueue.produceMessage(MessageType.UpdateSlb, slb.getId(), slbMessageData);
         }
 
-        return responseHandler.handle(new ExtendedView.ExtendedSlb(slb), hh.getMediaType());
+        return responseHandler.handleSerializedValue(ObjectJsonWriter.write(new ExtendedView.ExtendedSlb(slb), ViewConstraints.DETAIL), hh.getMediaType());
     }
 
     @GET
@@ -365,11 +379,9 @@ public class SlbResource {
                 SlbServer server = iter.next();
                 if (servers.contains(server.getIp())) {
                     iter.remove();
-                    break;
                 }
             }
             slb = slbRepository.update(slb);
-
         } finally {
             lock.unlock();
         }
@@ -388,7 +400,7 @@ public class SlbResource {
             messageQueue.produceMessage(MessageType.UpdateSlb, slb.getId(), slbMessageData);
         }
 
-        return responseHandler.handle(new ExtendedView.ExtendedSlb(slb), hh.getMediaType());
+        return responseHandler.handleSerializedValue(ObjectJsonWriter.write(new ExtendedView.ExtendedSlb(slb), ViewConstraints.DETAIL), hh.getMediaType());
     }
 
     private void setProperties(Long slbId, List<Property> properties) {

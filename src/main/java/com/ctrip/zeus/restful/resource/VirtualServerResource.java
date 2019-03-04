@@ -79,9 +79,9 @@ public class VirtualServerResource {
     Logger logger = LoggerFactory.getLogger(this.getClass());
 
     /**
-     * @api {get} /api/vses: Request vs information
-     * @apiName ListVirtualServers
-     * @apiGroup VirtualServer
+     * @api {get} /api/vses: [Read] Batch fetch vs data
+     * @apiName ListVSes
+     * @apiGroup VS
      * @apiParam {long[]} vsId          1,2,3
      * @apiParam {string[]} vsName      localhost,80
      * @apiParam {string[]} fuzzyName   local,8
@@ -171,6 +171,14 @@ public class VirtualServerResource {
         return responseHandler.handleSerializedValue(ObjectJsonWriter.write(listView, type), hh.getMediaType());
     }
 
+    /**
+     * @api {post} /api/vs/new: [Write] Create new virtual server
+     * @apiName CreateVS
+     * @apiGroup VS
+     * @apiDescription See [Update vs content](#api-VS-FullUpdateVS) for object description
+     * @apiParam {boolean} [force]             skip all validations and forcibly create a group
+     * @apiSuccess (Success 200) {VirtualServer} vs    newly created vs object
+     **/
     @POST
     @Path("/vs/new")
     @Produces({MediaType.APPLICATION_JSON, MediaType.APPLICATION_XML})
@@ -205,28 +213,38 @@ public class VirtualServerResource {
             messageQueue.produceMessage(MessageType.NewVs, vs.getId(), slbMessageData);
         }
 
-        return responseHandler.handle(new ExtendedView.ExtendedVs(vs), hh.getMediaType());
+        return responseHandler.handleSerializedValue(ObjectJsonWriter.write(vs, ViewConstraints.DETAIL), hh.getMediaType());
 
     }
 
     /**
-     * @api {post} /api/vs/update: Update vs content
-     * @apiName UpdateVs
-     * @apiGroup VirtualServer
+     * @api {post} /api/vs/update: [Write] Update vs content
+     * @apiName FullUpdateVS
+     * @apiGroup VS
      * @apiSuccess {VirtualServer} vs json object
+     * @apiParam {boolean} [force]  skip all validations and forcibly create a vs
+     * @apiParam (VirtualServer) {Long} id                        id
+     * @apiParam (VirtualServer) {String} name                    name
+     * @apiParam (VirtualServer) {Integer} version                version
+     * @apiParam (VirtualServer) {Boolean} ssl                    https vs
+     * @apiParam (VirtualServer) {String} port                    vs port
+     * @apiParam (VirtualServer) {Long[]} slb-ids                 slb dependencies
+     * @apiParam (VirtualServer) {Domain[]} domains               vs domains
+     * @apiParam (VirtualServer) {String[]} [tags]                add tags to group
+     * @apiParam (VirtualServer) {Object[]} [properties]          add/update properties of group
+     * @apiParam (Domain) {String} name                           domain name
      * @apiExample {json} Usage:
-     * {
-     * "version" : 1,
-     * "name" : "localhost_80",
-     * "id" : 3,
-     * "port" : "80",
-     * "domains" : [ {
-     * "name" : "localhost_80"
-     * } ],
-     * "ssl" : false,
-     * "slb-ids" : [ 3 ],
-     * "slb-id" : 3
-     * }
+     *  {
+     *    "version" : 1,
+     *    "name" : "localhost_80",
+     *    "id" : 3,
+     *    "port" : "80",
+     *    "domains" : [ {
+     *      "name" : "localhost_80"
+     *    } ],
+     *    "ssl" : false,
+     *    "slb-ids" : [ 3 ]
+     *  }
      */
     @POST
     @Path("/vs/update")
@@ -274,7 +292,7 @@ public class VirtualServerResource {
             messageQueue.produceMessage(MessageType.UpdateVs, vs.getId(), slbMessageData);
         }
 
-        return responseHandler.handle(new ExtendedView.ExtendedVs(vs), hh.getMediaType());
+        return responseHandler.handleSerializedValue(ObjectJsonWriter.write(vs, ViewConstraints.DETAIL), hh.getMediaType());
     }
 
     @GET
@@ -314,7 +332,7 @@ public class VirtualServerResource {
             messageQueue.produceMessage(MessageType.UpdateVs, vs.getId(), slbMessageData);
         }
 
-        return responseHandler.handle(new ExtendedView.ExtendedVs(vs), hh.getMediaType());
+        return responseHandler.handleSerializedValue(ObjectJsonWriter.write(vs, ViewConstraints.DETAIL), hh.getMediaType());
     }
 
     @GET
@@ -361,7 +379,7 @@ public class VirtualServerResource {
         } else {
             messageQueue.produceMessage(MessageType.UpdateVs, vs.getId(), slbMessageData);
         }
-        return responseHandler.handle(new ExtendedView.ExtendedVs(vs), hh.getMediaType());
+        return responseHandler.handleSerializedValue(ObjectJsonWriter.write(vs, ViewConstraints.DETAIL), hh.getMediaType());
     }
 
     @GET

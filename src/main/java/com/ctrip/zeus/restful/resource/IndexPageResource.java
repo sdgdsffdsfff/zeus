@@ -1,9 +1,9 @@
 package com.ctrip.zeus.restful.resource;
 
 import com.ctrip.zeus.exceptions.ValidationException;
-import com.ctrip.zeus.page.entity.DefaultPage;
+import com.ctrip.zeus.page.entity.DefaultFile;
 import com.ctrip.zeus.restful.message.ResponseHandler;
-import com.ctrip.zeus.service.errorPage.IndexPageService;
+import com.ctrip.zeus.service.file.IndexPageService;
 import org.glassfish.jersey.media.multipart.FormDataParam;
 import org.springframework.stereotype.Component;
 
@@ -78,7 +78,7 @@ public class IndexPageResource {
                                  @Context HttpHeaders hh,
                                  @QueryParam("slbId") Long slbId,
                                  @QueryParam("ip") String ip) throws Exception {
-        DefaultPage res = null;
+        DefaultFile res = null;
         if (slbId != null) {
             res = indexPageService.getCurrentIndexPage(slbId);
         } else if (ip != null) {

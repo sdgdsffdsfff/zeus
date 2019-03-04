@@ -1,16 +1,17 @@
 package com.ctrip.zeus.service.build.conf;
 
 import com.ctrip.zeus.exceptions.ValidationException;
-import com.ctrip.zeus.model.entity.Domain;
-import com.ctrip.zeus.model.entity.Group;
-import com.ctrip.zeus.model.entity.Slb;
-import com.ctrip.zeus.model.entity.VirtualServer;
+import com.ctrip.zeus.model.entity.*;
 import com.ctrip.zeus.service.build.ConfigHandler;
+import com.ctrip.zeus.service.file.SessionTicketService;
 import com.ctrip.zeus.util.AssertUtils;
 import org.springframework.stereotype.Component;
 
 import javax.annotation.Resource;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * @author:xingchaowang
@@ -21,12 +22,15 @@ public class ServerConf {
     @Resource
     ConfigHandler configHandler;
     @Resource
+    SessionTicketService sessionTicketService;
+    @Resource
     LocationConf locationConf;
 
     public static final String SSL_PATH = "/data/nginx/ssl/";
     private static final String ZONENAME = "proxy_zone";
 
-    public String generate(Slb slb, VirtualServer vs, List<Group> groups) throws Exception {
+    public String generate(Slb slb, VirtualServer vs, List<TrafficPolicy> policies, List<Group> groups,
+                           Map<String, Object> objectOnVsReferrer) throws Exception {
         Long slbId = slb.getId();
         Long vsId = vs.getId();
 
@@ -38,7 +42,7 @@ public class ServerConf {
         }
 
         confWriter.writeServerStart();
-        if (vs.isSsl() && configHandler.getEnable("http.version.2", null, null, null, false)) {
+        if (vs.isSsl() && configHandler.getEnable("http.version.2", slbId, null, null, false)) {
             writeHttp2Configs(confWriter, slbId, vs);
         } else {
             confWriter.writeCommand("listen", vs.getPort());
@@ -62,6 +66,18 @@ public class ServerConf {
             confWriter.writeCommand("ssl_certificate", SSL_PATH + vsId + "/ssl.crt");
             confWriter.writeCommand("ssl_certificate_key", SSL_PATH + vsId + "/ssl.key");
             confWriter.writeCommand("ssl_protocols", getProtocols(slbId, vsId));
+            confWriter.writeCommand("ssl_prefer_server_ciphers", configHandler.getStringValue("ssl.prefer.server.ciphers", slbId, vsId, null, "on"));
+            confWriter.writeCommand("ssl_ciphers", configHandler.getStringValue("ssl.ciphers", slbId, vsId, null, "EECDH+CHACHA20:EECDH+CHACHA20-draft:EECDH+AES128:RSA+AES128:EECDH+AES256:RSA+AES256:EECDH+3DES:RSA+3DES:!MD5"));
+
+            confWriter.writeCommand("ssl_session_cache", configHandler.getStringValue("ssl.session.cache", slbId, vsId, null, "shared:SSL:20m"));
+            confWriter.writeCommand("ssl_session_timeout", configHandler.getStringValue("ssl.session.cache.timeout", slbId, vsId, null, "180m"));
+
+            if (configHandler.getEnable("session.ticket", slbId, vsId, null, false) && sessionTicketService.getCurrentSessionTicketFile(slbId) != null) {
+                confWriter.writeCommand("ssl_session_tickets", "on");
+                String path = configHandler.getStringValue("session.ticket.key.path", "/opt/app/nginx/conf/ticket");
+                String fileName = configHandler.getStringValue("session.ticket.key.file", "sessionTicket.key");
+                confWriter.writeCommand("ssl_session_ticket_key", path + "/" + fileName);
+            }
         }
 
         if (configHandler.getEnable("server.vs.health.check", slbId, vsId, null, false)) {
@@ -70,10 +86,7 @@ public class ServerConf {
 
         confWriter.writeCommand("req_status", ZONENAME);
 
-        //add locations
-        for (Group group : groups) {
-            locationConf.write(confWriter, slb, vs, group);
-        }
+        generateLocations(slb, vs, objectOnVsReferrer, policies, groups, vsId, confWriter);
 
         if (configHandler.getEnable("server.errorPage", slbId, vsId, null, false)) {
             boolean useNew = configHandler.getEnable("server.errorPage.use.new", slbId, vsId, null, true);
@@ -85,8 +98,83 @@ public class ServerConf {
             }
         }
 
+        addDefaultRootLoaction(slbId, vsId, groups, confWriter);
+
         confWriter.writeServerEnd();
         return confWriter.getValue();
+    }
+
+    private void generateLocations(Slb slb, VirtualServer vs, Map<String, Object> objectOnVsReferrer, List<TrafficPolicy> policies, List<Group> groups, Long vsId, ConfWriter confWriter) throws Exception {
+        //add locations
+        Set<Long> namedLocations = new HashSet<>();
+
+        int gIdx = 0;
+        int pIdx = 0;
+        int _firstGroup = 0, _firstPolicy = 1, _firstGvs = 2, _firstPvs = 3;
+        Object[] first = new Object[4];
+        while (gIdx < groups.size() && pIdx < policies.size()) {
+            Group g;
+            TrafficPolicy p;
+            GroupVirtualServer gvs;
+            PolicyVirtualServer pvs;
+            if (first[_firstGroup] == null) {
+                g = groups.get(gIdx);
+                gvs = (GroupVirtualServer) objectOnVsReferrer.get("gvs-" + g.getId());
+            } else {
+                g = (Group) first[_firstGroup];
+                gvs = (GroupVirtualServer) first[_firstGvs];
+            }
+            if (first[_firstPolicy] == null) {
+                p = policies.get(pIdx);
+                pvs = (PolicyVirtualServer) objectOnVsReferrer.get("pvs-" + p.getId());
+            } else {
+                p = (TrafficPolicy) first[_firstPolicy];
+                pvs = (PolicyVirtualServer) first[_firstPvs];
+            }
+            if (pvs.getPriority() - gvs.getPriority() >= 0) {
+                locationConf.write(confWriter, slb, vs, p, pvs);
+                for (TrafficControl c : p.getControls()) {
+                    namedLocations.add(c.getGroup().getId());
+                }
+                pIdx++;
+                p = null;
+                pvs = null;
+            } else {
+                if (namedLocations.contains(g.getId())) {
+                    locationConf.write(confWriter, slb, vs, g, gvs, false);
+                    locationConf.write(confWriter, slb, vs, g, gvs, true);
+                } else {
+                    locationConf.write(confWriter, slb, vs, g, gvs, false);
+                }
+                gIdx++;
+                g = null;
+                gvs = null;
+            }
+            first[_firstGroup] = g;
+            first[_firstGvs] = gvs;
+            first[_firstPolicy] = p;
+            first[_firstPvs] = pvs;
+        }
+        while (pIdx < policies.size()) {
+            TrafficPolicy p = policies.get(pIdx);
+            PolicyVirtualServer pvs = (PolicyVirtualServer) objectOnVsReferrer.get("pvs-" + p.getId());
+            locationConf.write(confWriter, slb, vs, p, pvs);
+            for (TrafficControl c : p.getControls()) {
+                namedLocations.add(c.getGroup().getId());
+            }
+            pIdx++;
+        }
+        while (gIdx < groups.size()) {
+            Group g = groups.get(gIdx);
+            GroupVirtualServer gvs = (GroupVirtualServer) objectOnVsReferrer.get("gvs-" + g.getId());
+            if (namedLocations.contains(g.getId())) {
+                locationConf.write(confWriter, slb, vs, g, gvs, false);
+                locationConf.write(confWriter, slb, vs, g, gvs, true);
+            } else {
+                locationConf.write(confWriter, slb, vs, g, gvs, false);
+            }
+            gIdx++;
+        }
     }
 
     private void writeHttp2Configs(ConfWriter confWriter, Long slbId, VirtualServer vs) throws Exception {
@@ -169,18 +257,53 @@ public class ServerConf {
         confWriter.writeServerEnd();
     }
 
-    public void writeDefaultServers(ConfWriter confWriter) {
+    public void writeDefaultServers(ConfWriter confWriter, Long slbId) throws Exception {
         confWriter.writeServerStart();
         confWriter.writeCommand("listen", "*:80 default_server");
         locationConf.writeDefaultLocations(confWriter);
         confWriter.writeServerEnd();
 
         confWriter.writeServerStart();
-        confWriter.writeCommand("listen", "*:443 default_server");
+        if (configHandler.getEnable("default.server.http.version.2", slbId, null, null, false)) {
+            confWriter.writeCommand("listen", "*:443 http2 default_server");
+        } else {
+            confWriter.writeCommand("listen", "*:443 default_server");
+        }
         confWriter.writeCommand("ssl", "on");
         confWriter.writeCommand("ssl_certificate", SSL_PATH + "default/ssl.crt");
         confWriter.writeCommand("ssl_certificate_key", SSL_PATH + "default/ssl.key");
+        confWriter.writeCommand("ssl_protocols", getDefaultServerProtocols(slbId));
         locationConf.writeDefaultLocations(confWriter);
         confWriter.writeServerEnd();
+    }
+
+    private String getDefaultServerProtocols(Long slbId) throws Exception {
+        String result = "TLSv1 TLSv1.1 TLSv1.2";
+        if (configHandler.getEnable("default.server.ssl.protocol.sslv2", slbId, null, null, false)) {
+            result += " SSLv2";
+        }
+        if (configHandler.getEnable("default.server.ssl.protocol.sslv3", slbId, null, null, false)) {
+            result += " SSLv3";
+        }
+        return result;
+    }
+
+    private void addDefaultRootLoaction(Long slbId, Long vsId, List<Group> groups, ConfWriter confWriter) throws Exception {
+        // 0. enable flag
+        if (!configHandler.getEnable("default.root.location", slbId, vsId, null, false)) {
+            return;
+        }
+        // 1. return while already have root location .
+        for (Group group : groups) {
+            for (GroupVirtualServer gvs : group.getGroupVirtualServers()) {
+                if (gvs.getVirtualServer().getId().equals(vsId)) {
+                    if (gvs.getPath().trim().equals("/") || gvs.getPath().trim().equals("~* ^/")) {
+                        return;
+                    }
+                }
+            }
+        }
+        // 2. add default location instead while not found root location.
+        locationConf.writeDefaultRootLocation(confWriter);
     }
 }

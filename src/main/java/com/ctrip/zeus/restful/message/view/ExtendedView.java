@@ -59,7 +59,6 @@ public interface ExtendedView<T> {
             return instance.getAppId();
         }
 
-
         @Override
         HealthCheck getHealthCheck() {
             return instance.getHealthCheck();
@@ -97,9 +96,6 @@ public interface ExtendedView<T> {
 
         @Override
         List<GroupVirtualServer> getGroupVirtualServers() {
-            for (GroupVirtualServer gvs : instance.getGroupVirtualServers()) {
-                ExtendedVs.renderVirtualServer(gvs.getVirtualServer());
-            }
             return instance.getGroupVirtualServers();
         }
 
@@ -155,8 +151,6 @@ public interface ExtendedView<T> {
     }
 
     class ExtendedVs extends VsView implements ExtendedView<VirtualServer>, PropertySortable {
-        private static DynamicStringProperty n2nViewMode = DynamicPropertyFactory.getInstance().getStringProperty("slb.slb-vs-n2n.view.mode", "singular");
-
         private List<String> tags;
         private List<Property> properties;
         private VirtualServer instance;
@@ -185,33 +179,8 @@ public interface ExtendedView<T> {
         }
 
         @Override
-        Long getSlbId() {
-            switch (n2nViewMode.get()) {
-                case "plural":
-                    return null;
-                case "singular":
-                case "redundant":
-                default:
-                    if (instance.getSlbId() == null && instance.getSlbIds().size() > 0) {
-                        instance.setSlbId(instance.getSlbIds().get(0));
-                    }
-                    return instance.getSlbId();
-            }
-        }
-
-        @Override
         List<Long> getSlbIds() {
-            switch (n2nViewMode.get()) {
-                case "plural":
-                case "redundant":
-                    if (instance.getSlbIds().size() == 0 && instance.getSlbId() != null) {
-                        instance.getSlbIds().add(instance.getSlbId());
-                    }
-                    return instance.getSlbIds();
-                case "singular":
-                default:
-                    return null;
-            }
+            return instance.getSlbIds();
         }
 
         @Override
@@ -256,31 +225,7 @@ public interface ExtendedView<T> {
 
         @Override
         public VirtualServer getInstance() {
-            return null;
-        }
-
-        public static void renderVirtualServer(VirtualServer vs) {
-            switch (n2nViewMode.get()) {
-                case "plural":
-                    if (vs.getSlbIds().size() == 0 && vs.getSlbId() != null) {
-                        vs.getSlbIds().add(vs.getSlbId());
-                    }
-                    vs.setSlbId(null);
-                    break;
-                case "redundant":
-                    if (vs.getSlbIds().size() == 0 && vs.getSlbId() != null) {
-                        vs.getSlbIds().add(vs.getSlbId());
-                    } else if (vs.getSlbId() == null && vs.getSlbIds().size() > 0) {
-                        vs.setSlbId(vs.getSlbIds().get(0));
-                    }
-                    break;
-                case "singular":
-                default:
-                    if (vs.getSlbId() == null && vs.getSlbIds().size() > 0) {
-                        vs.setSlbId(vs.getSlbIds().get(0));
-                    }
-                    vs.getSlbIds().clear();
-            }
+            return instance;
         }
 
         @Override
@@ -424,6 +369,70 @@ public interface ExtendedView<T> {
                     }
                     return null;
             }
+        }
+    }
+
+    class ExtendedTrafficPolicy implements ExtendedView<TrafficPolicy> {
+        private List<String> tags;
+        private List<Property> properties;
+        private final TrafficPolicy instance;
+
+        public ExtendedTrafficPolicy() {
+            this(new TrafficPolicy());
+        }
+
+        public ExtendedTrafficPolicy(TrafficPolicy instance) {
+            this.instance = instance;
+        }
+
+        @Override
+        public Long getId() {
+            return instance.getId();
+        }
+
+        public List<TrafficControl> getControls() {
+            return instance.getControls();
+        }
+
+        public String getName() {
+            return instance.getName();
+        }
+
+        public List<PolicyVirtualServer> getPolicyVirtualServers() {
+            return instance.getPolicyVirtualServers();
+        }
+
+        public Integer getVersion() {
+            return instance.getVersion();
+        }
+
+        public Date getCreatedTime() {
+            return instance.getCreatedTime();
+        }
+
+        @Override
+        public void setTags(List<String> tags) {
+            this.tags = tags;
+        }
+
+        @Override
+        public void setProperties(List<Property> properties) {
+            this.properties = properties;
+        }
+
+        @Override
+        public List<String> getTags() {
+            return tags;
+        }
+
+        @Override
+        public List<Property> getProperties() {
+            return properties;
+        }
+
+        @Override
+        public TrafficPolicy getInstance() {
+            return getInstance();
         }
     }
 }

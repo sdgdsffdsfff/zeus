@@ -8,11 +8,16 @@ import com.ctrip.zeus.queue.entity.SlbData;
 import com.ctrip.zeus.queue.entity.SlbMessageData;
 import com.ctrip.zeus.queue.entity.VsData;
 import com.ctrip.zeus.queue.transform.DefaultJsonParser;
+import com.ctrip.zeus.support.ObjectJsonParser;
+import com.ctrip.zeus.support.ObjectJsonWriter;
+import com.fasterxml.jackson.core.JsonProcessingException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import javax.servlet.http.HttpServletRequest;
 import java.io.IOException;
+import java.io.UnsupportedEncodingException;
+import java.net.URLDecoder;
 
 /**
  * Created by fanqq on 2016/10/13.
@@ -22,7 +27,10 @@ public class MessageUtil {
 
     public static String getMessageData(HttpServletRequest request, Group[] groups, VirtualServer[] vses, Slb[] slbs, String[] ips, boolean success) {
         SlbMessageData res = new SlbMessageData();
-        res.setQuery(request.getQueryString())
+        String query = request.getQueryString();
+        String description = getDescriptionFromQuery(query);
+        res.setQuery(query)
+                .setDescription(description)
                 .setUri(request.getRequestURI())
                 .setSuccess(success)
                 .setClientIp(getClientIP(request));
@@ -46,14 +54,44 @@ public class MessageUtil {
                 res.addIp(ip);
             }
         }
-        return String.format(SlbMessageData.JSON, res);
+        try {
+            return ObjectJsonWriter.write(res);
+        } catch (Exception e) {
+            logger.warn("Write Message Data Fail." + res.toString(), e);
+            return null;
+        }
+    }
+
+    public static String getDescriptionFromQuery(String query) {
+        if (query == null){
+            return null;
+        }
+        String[] qs = query.split("&");
+        String description = null;
+        for (String tmp : qs) {
+            if (tmp.startsWith("description=")) {
+                String[] l = tmp.split("=");
+                if (l.length == 2 && l[1] != null) {
+                    try {
+                        description = URLDecoder.decode(l[1], "utf-8");
+                    } catch (UnsupportedEncodingException e) {
+                        logger.warn("Get Description Failed. Description:" + l[1]);
+                    }
+
+                }
+            }
+        }
+        if (description != null && description.length() > 512) {
+            description = description.substring(0, 512);
+        }
+        return description;
     }
 
     public static SlbMessageData parserSlbMessageData(String res) {
         try {
             if (res == null) return null;
-            return DefaultJsonParser.parse(SlbMessageData.class, res);
-        } catch (IOException e) {
+            return ObjectJsonParser.parse(res, SlbMessageData.class);
+        } catch (Exception e) {
             logger.warn("Parser Slb Message Data Failed. Message:" + res, e);
             return null;
         }

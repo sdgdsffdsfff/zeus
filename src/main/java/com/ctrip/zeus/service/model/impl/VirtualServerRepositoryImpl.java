@@ -6,16 +6,15 @@ import com.ctrip.zeus.dal.core.MetaVsArchiveDo;
 import com.ctrip.zeus.exceptions.ValidationException;
 import com.ctrip.zeus.model.entity.Domain;
 import com.ctrip.zeus.model.entity.VirtualServer;
-import com.ctrip.zeus.service.model.SelectionMode;
-import com.ctrip.zeus.service.model.VirtualServerRepository;
+import com.ctrip.zeus.service.model.*;
+import com.ctrip.zeus.service.model.common.ValidationContext;
 import com.ctrip.zeus.service.model.handler.SlbQuery;
-import com.ctrip.zeus.service.model.handler.SlbValidator;
-import com.ctrip.zeus.service.model.handler.VirtualServerValidator;
+import com.ctrip.zeus.service.model.validation.VirtualServerValidator;
 import com.ctrip.zeus.service.model.handler.impl.ContentReaders;
 import com.ctrip.zeus.service.model.handler.impl.VirtualServerEntityManager;
 import com.ctrip.zeus.service.nginx.CertificateService;
-import com.ctrip.zeus.service.model.IdVersion;
 import com.ctrip.zeus.service.query.VirtualServerCriteriaQuery;
+import com.dianping.cat.Cat;
 import com.google.common.base.Joiner;
 import org.springframework.stereotype.Component;
 import sun.reflect.generics.reflectiveObjects.NotImplementedException;
@@ -33,15 +32,17 @@ public class VirtualServerRepositoryImpl implements VirtualServerRepository {
     @Resource
     private VirtualServerEntityManager virtualServerEntityManager;
     @Resource
-    private VirtualServerValidator virtualServerModelValidator;
+    private ValidationFacade validationFacade;
     @Resource
-    private SlbValidator slbModelValidator;
+    private VirtualServerValidator virtualServerModelValidator;
     @Resource
     private SlbQuery slbQuery;
     @Resource
     private CertificateService certificateService;
     @Resource
     private ArchiveVsDao archiveVsDao;
+    @Resource
+    private AutoFiller autoFiller;
 
     @Override
     public List<VirtualServer> listAll(Long[] vsIds) throws Exception {
@@ -59,9 +60,13 @@ public class VirtualServerRepositoryImpl implements VirtualServerRepository {
             values[i] = keys[i].toString();
         }
         for (MetaVsArchiveDo d : archiveVsDao.findAllByIdVersion(hashes, values, ArchiveVsEntity.READSET_FULL)) {
-            VirtualServer vs = ContentReaders.readVirtualServerContent(d.getContent());
-            vs.setCreatedTime(d.getDateTimeLastChange());
-            result.add(vs);
+            try {
+                VirtualServer vs = ContentReaders.readVirtualServerContent(d.getContent());
+                vs.setCreatedTime(d.getDateTimeLastChange());
+                autoFiller.autofill(vs);
+                result.add(vs);
+            } catch (Exception e) {
+            }
         }
         return result;
     }
@@ -81,51 +86,22 @@ public class VirtualServerRepositoryImpl implements VirtualServerRepository {
 
         VirtualServer vs = ContentReaders.readVirtualServerContent(d.getContent());
         vs.setCreatedTime(d.getDateTimeLastChange());
+        autoFiller.autofill(vs);
         return vs;
     }
 
     @Override
     public VirtualServer add(VirtualServer virtualServer) throws Exception {
         virtualServer.setId(0L);
-        //TODO render for deprecated field
-        if (virtualServer.getSlbId() != null) {
-            if (!virtualServer.getSlbIds().contains(virtualServer.getSlbId())) {
-                virtualServer.getSlbIds().add(virtualServer.getSlbId());
-            }
-            virtualServer.setSlbId(null);
+        // keep slb-id field for history record
+        virtualServer.setSlbId(null);
+        ValidationContext context = new ValidationContext();
+        validationFacade.validateVs(virtualServer, context);
+        if (context.getErrorVses().contains(virtualServer.getId())) {
+            throw new ValidationException(context.getVsErrorReason(virtualServer.getId()));
         }
-
-        virtualServerModelValidator.validate(virtualServer);
-
-        Set<Long> uniq = new HashSet<>(virtualServer.getSlbIds());
-        for (Long slbId : uniq) {
-            if (!slbModelValidator.exists(slbId)) {
-                throw new ValidationException("Slb with id " + slbId + "does not exits.");
-            }
-        }
-
-        String[] domains = new String[virtualServer.getDomains().size()];
-        for (int i = 0; i < virtualServer.getDomains().size(); i++) {
-            domains[i] = virtualServer.getDomains().get(i).getName();
-        }
-
-        Set<IdVersion> keys = virtualServerCriteriaQuery.queryByDomains(domains);
-        List<VirtualServer> check = listAll(keys.toArray(new IdVersion[keys.size()]));
-        Iterator<VirtualServer> iter = check.iterator();
-        while (iter.hasNext()) {
-            VirtualServer tmp = iter.next();
-            boolean retained = false;
-            for (Long slbId : tmp.getSlbIds()) {
-                retained = uniq.contains(slbId);
-                if (retained) break;
-            }
-            if (!retained) iter.remove();
-        }
-        check.add(virtualServer);
-
-        virtualServerModelValidator.unite(check);
+        autoFiller.autofill(virtualServer);
         virtualServerEntityManager.add(virtualServer);
-
         if (virtualServer.isSsl()) {
             installCertificate(virtualServer);
         }
@@ -134,51 +110,15 @@ public class VirtualServerRepositoryImpl implements VirtualServerRepository {
 
     @Override
     public VirtualServer update(VirtualServer virtualServer) throws Exception {
-        if (!virtualServerModelValidator.exists(virtualServer.getId())) {
-            throw new ValidationException("Virtual server with id " + virtualServer.getId() + " does not exist.");
+        // keep slb-id field for history record
+        virtualServer.setSlbId(null);
+        virtualServerModelValidator.checkRestrictionForUpdate(virtualServer);
+        ValidationContext context = new ValidationContext();
+        validationFacade.validateVs(virtualServer, context);
+        if (context.getErrorVses().contains(virtualServer.getId())) {
+            throw new ValidationException(context.getVsErrorReason(virtualServer.getId()));
         }
-        //TODO render for deprecated field
-        if (virtualServer.getSlbId() != null) {
-            if (!virtualServer.getSlbIds().contains(virtualServer.getSlbId())) {
-                virtualServer.getSlbIds().add(virtualServer.getSlbId());
-            }
-            virtualServer.setSlbId(null);
-        }
-
-        virtualServerModelValidator.validate(virtualServer);
-
-        Set<Long> uniq = new HashSet<>(virtualServer.getSlbIds());
-        for (Long slbId : uniq) {
-            if (!slbModelValidator.exists(slbId)) {
-                throw new ValidationException("Slb with id " + slbId + "does not exits.");
-            }
-        }
-
-        String[] domains = new String[virtualServer.getDomains().size()];
-        for (int i = 0; i < virtualServer.getDomains().size(); i++) {
-            domains[i] = virtualServer.getDomains().get(i).getName();
-        }
-
-        Set<IdVersion> keys = virtualServerCriteriaQuery.queryByDomains(domains);
-        List<VirtualServer> check = listAll(keys.toArray(new IdVersion[keys.size()]));
-        Iterator<VirtualServer> iter = check.iterator();
-        while (iter.hasNext()) {
-            VirtualServer tmp = iter.next();
-            if (tmp.getId().equals(virtualServer.getId())) {
-                iter.remove();
-                continue;
-            }
-
-            boolean retained = false;
-            for (Long slbId : tmp.getSlbIds()) {
-                retained = uniq.contains(slbId);
-                if (retained) break;
-            }
-            if (!retained) iter.remove();
-        }
-        check.add(virtualServer);
-
-        virtualServerModelValidator.unite(check);
+        autoFiller.autofill(virtualServer);
         virtualServerEntityManager.update(virtualServer);
 
         if (virtualServer.isSsl()) {

@@ -9,6 +9,11 @@
             <readset name="IDONLY">
                 <member name="id"/>
             </readset>
+            <readset name="CONTENT_EXCLUDED">
+                <member name="id"/>
+                <member name="version"/>
+                <member name="date-time-last-change"/>
+            </readset>
         </readsets>
         <query-defs>
             <!--These queries are particularly designed for batch selection required task executors-->
@@ -24,6 +29,22 @@
                             ON rvs.vs_id = rvss.vs_id
                             AND rvs.slb_id = ${rel-id}
                             AND (rvs.vs_version = rvss.online_version OR rvs.vs_version = rvss.offline_version)) AS tmp
+                    ON av.vs_id = tmp.vs_id AND av.version = tmp.vs_version
+                    ]]>
+                </statement>
+            </query>
+            <query name="find-all-by-slbs-and-vs-offline-version" type="SELECT" multiple="true">
+                <param name="ids"/>
+                <statement>
+                    <![CDATA[
+                    SELECT <FIELDS/>
+                    FROM <TABLE/>
+                    INNER JOIN (SELECT rvs.vs_id, rvs.vs_version
+                        FROM r_vs_slb rvs
+                        INNER JOIN r_vs_status rvss
+                            ON rvs.vs_id = rvss.vs_id
+                            AND rvs.slb_id IN <IN>${ids}</IN>
+                            AND rvs.vs_version = rvss.offline_version) AS tmp
                     ON av.vs_id = tmp.vs_id AND av.version = tmp.vs_version
                     ]]>
                 </statement>
@@ -72,6 +93,16 @@
                     VALUES(<VALUES/>)
                     ON DUPLICATE KEY UPDATE
                     content = values(content)
+                    ]]>
+                </statement>
+            </query>
+            <query name="find-by-vs" type="SELECT" multiple="true">
+                <param name="vs-id"/>
+                <statement>
+                    <![CDATA[
+                    SELECT <FIELDS/>
+                    FROM <TABLE/>
+                    WHERE <FIELD name='vs-id'/> = ${vs-id}
                     ]]>
                 </statement>
             </query>
